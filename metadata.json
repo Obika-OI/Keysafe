@@ -1,0 +1,6 @@
+{
+  "name": "KeyShield - Mini Backend API Proxy for Render",
+  "description": "A lightweight, secure backend API proxy gateway designed for deployment on Render to protect client-side API keys, enforce CORS origins, rate-limit requests, and route securely to upstream services.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
