@@ -3,15 +3,59 @@
  * Centralized Multi-Service Credentials Vault & Gateway Client Helper
  * 
  * Drop this helper into any of your separate frontend applications (e.g., Firebase web apps, Next.js, React SPA, Mobile).
- * Each app feeds its own unique personality, prompts, and payload details while keeping all API keys secure on Render.
+ * 
+ * HOW IT PROTECTS YOUR API KEYS:
+ * 1. Your real API keys (GEMINI_API_KEY, STRIPE_SECRET_KEY, PAYSTACK_SECRET_KEY) remain ONLY on Render in your backend environment.
+ * 2. When your app makes a call, this client performs an automated short-lived JWT session handshake with Render.
+ * 3. The Render gateway uses the secret API keys on the server and returns the results to your app.
+ * 4. End users who open browser DevTools can NEVER see or steal your API keys!
  */
 
 const CENTRAL_GATEWAY_URL = (typeof process !== 'undefined' && process.env?.VITE_CENTRAL_GATEWAY_URL) 
   || (typeof window !== 'undefined' && (window as any).__CENTRAL_GATEWAY_URL__)
   || (typeof window !== 'undefined' ? `${window.location.origin}/api` : 'http://localhost:3000/api');
 
-const APP_SECRET = (typeof process !== 'undefined' && (process.env?.VITE_CENTRAL_APP_SECRET || process.env?.CENTRAL_APP_SECRET))
-  || 'app_live_secret_token';
+// In-memory cached App JWT session token
+let cachedAppJwt: string | null = null;
+let tokenExpiresAt = 0;
+
+/**
+ * Automatically obtains or refreshes a short-lived App JWT session token from Render
+ * No client-side .env keys or static passwords required!
+ */
+async function getOrRefreshAppSessionToken(): Promise<string> {
+  const now = Date.now();
+  // Return cached token if valid for at least another 60 seconds
+  if (cachedAppJwt && now < tokenExpiresAt - 60000) {
+    return cachedAppJwt;
+  }
+
+  try {
+    const res = await fetch(`${CENTRAL_GATEWAY_URL}/auth/app-session`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (!res.ok) {
+      throw new Error(`Session handshake failed with status ${res.status}`);
+    }
+
+    const data = await res.json();
+    if (!data.token) {
+      throw new Error('No session token returned by gateway');
+    }
+
+    const token = String(data.token);
+    cachedAppJwt = token;
+    tokenExpiresAt = now + (data.expiresInSeconds || 900) * 1000;
+    return token;
+  } catch (error: any) {
+    console.error('Central Gateway Session Error:', error);
+    throw new Error('Unable to establish secure gateway session. Verify your domain is in ALLOWED_ORIGINS on Render.');
+  }
+}
 
 export interface GeminiOptions {
   modelName?: string;
@@ -25,13 +69,15 @@ export interface GeminiOptions {
 
 /**
  * SERVICE 1: Neutral Gemini AI Proxy
- * Fully respects whatever unique personality or system prompt the calling app sends.
+ * Uses the server-side GEMINI_API_KEY stored on Render.
+ * Users cannot inspect or steal the key.
  */
 export async function callCentralGemini(
   userPrompt: string | Array<{ role?: string; parts: Array<{ text: string }> }>,
   appSpecificPersona?: string,
   options?: GeminiOptions
 ): Promise<string> {
+  const token = await getOrRefreshAppSessionToken();
   const contents = typeof userPrompt === 'string' 
     ? [{ role: 'user', parts: [{ text: userPrompt }] }] 
     : userPrompt;
@@ -40,7 +86,7 @@ export async function callCentralGemini(
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'X-App-Secret': APP_SECRET,
+      'Authorization': `Bearer ${token}`,
     },
     body: JSON.stringify({
       modelName: options?.modelName || 'gemini-2.5-flash',
@@ -69,16 +115,19 @@ export async function callCentralGemini(
 export async function streamCentralGemini(
   userPrompt: string,
   appSpecificPersona: string,
-  onChunk: (chunkText: string) => void
+  onChunk: (chunkText: string) => void,
+  options?: GeminiOptions
 ): Promise<string> {
+  const token = await getOrRefreshAppSessionToken();
+
   const response = await fetch(`${CENTRAL_GATEWAY_URL}/ai/stream`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'X-App-Secret': APP_SECRET,
+      'Authorization': `Bearer ${token}`,
     },
     body: JSON.stringify({
-      modelName: 'gemini-2.5-flash',
+      modelName: options?.modelName || 'gemini-2.5-flash',
       systemInstruction: appSpecificPersona,
       prompt: userPrompt,
     }),
@@ -120,18 +169,20 @@ export async function streamCentralGemini(
 
 /**
  * SERVICE 2: Stripe Payment Intent Proxy
- * Injects STRIPE_SECRET_KEY server-side.
+ * Injects STRIPE_SECRET_KEY server-side on Render. Users never see the secret key.
  */
 export async function createStripePaymentIntent(
   amountInCents: number,
   currency: string = 'usd',
   metadata?: Record<string, string>
 ) {
+  const token = await getOrRefreshAppSessionToken();
+
   const response = await fetch(`${CENTRAL_GATEWAY_URL}/payments/create-stripe-intent`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'X-App-Secret': APP_SECRET,
+      'Authorization': `Bearer ${token}`,
     },
     body: JSON.stringify({
       amount: amountInCents,
@@ -149,7 +200,7 @@ export async function createStripePaymentIntent(
 
 /**
  * SERVICE 3: Paystack Initialize Proxy
- * Injects PAYSTACK_SECRET_KEY server-side.
+ * Injects PAYSTACK_SECRET_KEY server-side on Render.
  */
 export async function initializePaystackTransaction(
   email: string,
@@ -157,11 +208,13 @@ export async function initializePaystackTransaction(
   callbackUrl?: string,
   metadata?: Record<string, any>
 ) {
+  const token = await getOrRefreshAppSessionToken();
+
   const response = await fetch(`${CENTRAL_GATEWAY_URL}/payments/paystack-init`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'X-App-Secret': APP_SECRET,
+      'Authorization': `Bearer ${token}`,
     },
     body: JSON.stringify({
       email,
@@ -180,14 +233,18 @@ export async function initializePaystackTransaction(
 
 /**
  * Generic Universal Proxy Caller
- * Forwards any custom request through your Render gateway without exposing API keys in client JavaScript.
+ * Forwards any custom upstream request through your Render gateway.
  */
-export async function centralProxyFetch(targetUrl: string, init?: RequestInit): Promise<Response> {
+export async function centralProxyFetch(
+  targetUrl: string,
+  init?: RequestInit
+): Promise<Response> {
+  const token = await getOrRefreshAppSessionToken();
   const cleanGatewayUrl = CENTRAL_GATEWAY_URL.replace(/\/+$/, '');
   const proxyEndpoint = `${cleanGatewayUrl}/proxy?target=${encodeURIComponent(targetUrl)}`;
 
   const headers = new Headers(init?.headers || {});
-  headers.set('X-App-Secret', APP_SECRET);
+  headers.set('Authorization', `Bearer ${token}`);
 
   return fetch(proxyEndpoint, {
     ...init,
