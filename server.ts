@@ -2,8 +2,6 @@ import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
-import * as jose from 'jose';
-import crypto from 'crypto';
 
 dotenv.config();
 
@@ -15,7 +13,7 @@ app.use(express.json({ limit: '15mb' }));
 app.use(express.urlencoded({ extended: true, limit: '15mb' }));
 app.use(express.text({ type: ['text/*', 'application/xml', 'application/javascript'], limit: '15mb' }));
 
-// Allowed origins default supporting your web apps & local testing
+// Approved frontend origins (Permanent whitelist)
 const defaultAllowedOrigins = [
   'https://dome-2030.web.app',
   'https://dome-2030.firebaseapp.com',
@@ -30,60 +28,63 @@ const envAllowedOrigins = process.env.ALLOWED_ORIGINS
 
 const allowedOriginsList = Array.from(new Set([...defaultAllowedOrigins, ...envAllowedOrigins]));
 
-// Internal JWT signing secret (ephemeral or from env)
-const JWT_SECRET_STRING = process.env.JWT_SECRET || process.env.CENTRAL_APP_SECRET || crypto.randomBytes(32).toString('hex');
-const JWT_SECRET_KEY = new TextEncoder().encode(JWT_SECRET_STRING);
-
-// Vault secrets (stored securely on Render backend only)
+// Vault secrets (stored securely in Render environment)
 const secretVault: Record<string, string> = {
   GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',
   STRIPE_SECRET_KEY: process.env.STRIPE_SECRET_KEY || '',
   PAYSTACK_SECRET_KEY: process.env.PAYSTACK_SECRET_KEY || '',
   OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || '',
-  GITHUB_TOKEN: process.env.GITHUB_TOKEN || '',
 };
 
-// Dynamic CORS Middleware
+function isOriginAllowed(originOrUrl?: string): boolean {
+  if (!originOrUrl) return false;
+  if (allowedOriginsList.includes('*') || process.env.NODE_ENV !== 'production') return true;
+  return allowedOriginsList.some((allowed) => {
+    if (originOrUrl.startsWith(allowed)) return true;
+    try {
+      const parsedA = new URL(originOrUrl);
+      const parsedB = new URL(allowed);
+      return parsedA.host === parsedB.host;
+    } catch {
+      return false;
+    }
+  });
+}
+
+// Permanent Dynamic CORS Middleware with 24h preflight cache
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (
-        !origin ||
-        allowedOriginsList.includes('*') ||
-        allowedOriginsList.includes(origin) ||
-        process.env.NODE_ENV !== 'production'
-      ) {
+      if (!origin || isOriginAllowed(origin)) {
         callback(null, true);
       } else {
-        callback(new Error(`Access blocked by gateway origin policy: ${origin}`));
+        callback(new Error(`Access blocked by permanent origin policy: ${origin}`));
       }
     },
     credentials: true,
+    maxAge: 86400,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD'],
     allowedHeaders: [
       'Content-Type',
       'Authorization',
-      'X-App-JWT',
-      'X-App-Secret',
       'X-Target-URL',
       'X-Requested-With',
       'Cache-Control',
       'Accept',
-      'anthropic-version',
     ],
-    exposedHeaders: ['X-RateLimit-Limit', 'X-RateLimit-Remaining', 'X-RateLimit-Reset', 'X-Proxy-Duration-Ms'],
+    exposedHeaders: ['X-RateLimit-Limit', 'X-RateLimit-Remaining', 'X-Proxy-Duration-Ms'],
   })
 );
 
-// Generic false error page returned to random visitors / web crawlers
+// False error page returned to random visitors / web crawlers
 const renderFalseWarningPage = (res: Response, status = 403) => {
   res.status(status).send(`<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>403 Forbidden - Access Denied</title>
+  <title>403 Forbidden</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #f8f9fa; color: #212529; padding: 50px 20px; text-align: center; }
     .container { max-width: 600px; margin: 40px auto; background: #fff; padding: 40px 30px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); border-top: 4px solid #dc3545; }
@@ -105,123 +106,40 @@ const renderFalseWarningPage = (res: Response, status = 403) => {
 </html>`);
 };
 
-// Root route shows false warning / error message to direct visitors
+// Root route shows false warning to any direct browser visitor
 app.get('/', (req: Request, res: Response) => {
   renderFalseWarningPage(res, 403);
 });
 
-// Render Health Check (Zero-leakage response for Render uptime monitoring)
+// Render Health Check
 app.get(['/healthz', '/api/health'], (req: Request, res: Response) => {
   res.status(200).json({ status: 'ok', timestamp: Date.now() });
 });
 
-/**
- * 1. AUTOMATIC APP JWT HANDSHAKE ENDPOINT
- * Allows authorized client apps from approved origins to obtain a short-lived,
- * cryptographically signed App JWT session token without requiring any client-side .env keys.
- */
-app.post('/api/auth/app-session', async (req: Request, res: Response) => {
-  const origin = (req.headers['origin'] as string) || (req.headers['referer'] as string) || '';
-  const clientIp = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || '127.0.0.1';
-
-  // Verify origin if running in production
-  const isAllowedOrigin =
-    process.env.NODE_ENV !== 'production' ||
-    allowedOriginsList.includes('*') ||
-    allowedOriginsList.some((allowed) => origin.startsWith(allowed));
-
-  if (!isAllowedOrigin && allowedOriginsList.length > 0) {
-    res.status(403).json({
-      error: 'Forbidden Origin',
-      message: 'Client origin is not authorized to request an API session token.',
-    });
-    return;
-  }
-
-  try {
-    // Generate a short-lived App Session JWT (valid for 15 minutes)
-    const token = await new jose.SignJWT({
-      appId: 'dome-client-app',
-      clientIp,
-      origin,
-      scope: ['ai:generate', 'ai:stream', 'payments:stripe', 'payments:paystack', 'proxy:universal'],
-    })
-      .setProtectedHeader({ alg: 'HS256' })
-      .setIssuedAt()
-      .setExpirationTime('15m')
-      .sign(JWT_SECRET_KEY);
-
-    res.json({
-      success: true,
-      token,
-      expiresInSeconds: 900,
-      tokenType: 'Bearer',
-    });
-  } catch (err: any) {
-    res.status(500).json({ error: 'Failed to issue app session token' });
-  }
-});
-
-/**
- * 2. APP JWT VERIFICATION MIDDLEWARE
- * Verifies that the incoming request contains a valid, non-expired App Session JWT.
- */
-const verifyAppJwtMiddleware = async (req: Request, res: Response, next: NextFunction) => {
-  if (
-    req.method === 'OPTIONS' ||
-    req.path === '/healthz' ||
-    req.path === '/api/health' ||
-    req.path === '/api/auth/app-session'
-  ) {
+// Strict Permanent Origin Validation Middleware for API routes
+const verifyApprovedOrigin = (req: Request, res: Response, next: NextFunction) => {
+  if (req.method === 'OPTIONS' || req.path === '/healthz' || req.path === '/api/health') {
     return next();
   }
 
-  const authHeader = req.headers['authorization'] || req.headers['x-app-jwt'] || req.headers['x-user-token'];
-  let token: string | null = null;
-
-  if (typeof authHeader === 'string') {
-    if (authHeader.startsWith('Bearer ')) {
-      token = authHeader.slice(7).trim();
-    } else {
-      token = authHeader.trim();
-    }
-  }
-
-  // Also support master app secret if provided
-  const masterSecret = process.env.CENTRAL_APP_SECRET;
-  if (token && masterSecret && token === masterSecret) {
+  if (process.env.NODE_ENV !== 'production' || allowedOriginsList.includes('*')) {
     return next();
   }
 
-  if (!token) {
-    res.status(401).json({
-      error: 'Unauthorized',
-      message: 'Missing App JWT token. Call `/api/auth/app-session` or provide `Authorization: Bearer <token>`.',
-    });
-    return;
+  const origin = req.headers['origin'] || req.headers['referer'] || '';
+  if (isOriginAllowed(typeof origin === 'string' ? origin : origin[0])) {
+    return next();
   }
 
-  try {
-    // Verify App JWT using internal secret
-    const { payload } = await jose.jwtVerify(token, JWT_SECRET_KEY);
-    (req as any).appSession = payload;
-    return next();
-  } catch (jwtErr) {
-    // If token is invalid or expired
-    res.status(401).json({
-      error: 'Unauthorized',
-      message: 'Invalid or expired App JWT session token.',
-      code: 'TOKEN_EXPIRED_OR_INVALID',
-    });
-  }
+  res.status(403).json({
+    error: 'Forbidden',
+    message: 'Access denied: origin is not in the approved frontend domain whitelist.',
+  });
 };
 
-app.use('/api/', verifyAppJwtMiddleware);
+app.use('/api/', verifyApprovedOrigin);
 
-// ==========================================
-// SERVICE 1: GEMINI NEUTRAL AI PROXY
-// Uses GEMINI_API_KEY securely from Render environment
-// ==========================================
+// SERVICE 1: GEMINI AI PROXY
 app.post('/api/ai/generate', async (req: Request, res: Response) => {
   try {
     const apiKey = secretVault.GEMINI_API_KEY || process.env.GEMINI_API_KEY;
@@ -230,35 +148,19 @@ app.post('/api/ai/generate', async (req: Request, res: Response) => {
     }
 
     const { contents, prompt, systemInstruction, modelName = 'gemini-2.5-flash', generationConfig, config } = req.body;
-
-    let resolvedContents: any = contents;
-    if (!resolvedContents && prompt) {
-      resolvedContents = prompt;
-    } else if (typeof resolvedContents === 'string') {
-      resolvedContents = resolvedContents;
-    }
+    let resolvedContents: any = contents || prompt;
 
     const ai = new GoogleGenAI({
       apiKey,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
-        },
-      },
+      httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
     });
 
     let targetModel = modelName;
     if (targetModel === 'gemini-1.5-flash') targetModel = 'gemini-2.5-flash';
     if (targetModel === 'gemini-1.5-pro') targetModel = 'gemini-2.5-pro';
 
-    const mergedConfig: any = {
-      ...(generationConfig || {}),
-      ...(config || {}),
-    };
-
-    if (systemInstruction) {
-      mergedConfig.systemInstruction = systemInstruction;
-    }
+    const mergedConfig: any = { ...(generationConfig || {}), ...(config || {}) };
+    if (systemInstruction) mergedConfig.systemInstruction = systemInstruction;
 
     const response = await ai.models.generateContent({
       model: targetModel,
@@ -273,19 +175,16 @@ app.post('/api/ai/generate', async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     console.error('Gemini Proxy Error:', error);
-    res.status(500).json({
-      success: false,
-      error: error?.message || 'Processing failed',
-    });
+    res.status(500).json({ success: false, error: error?.message || 'Processing failed' });
   }
 });
 
-// SSE Streaming for Gemini
+// Streaming for Gemini
 app.post('/api/ai/stream', async (req: Request, res: Response) => {
   try {
     const apiKey = secretVault.GEMINI_API_KEY || process.env.GEMINI_API_KEY;
     if (!apiKey) {
-      res.status(500).json({ success: false, error: 'GEMINI_API_KEY not configured in Render environment' });
+      res.status(500).json({ success: false, error: 'GEMINI_API_KEY not configured' });
       return;
     }
 
@@ -328,16 +227,12 @@ app.post('/api/ai/stream', async (req: Request, res: Response) => {
   }
 });
 
-// ==========================================
-// SERVICE 2: STRIPE INTENT / CHECKOUT PROXY
-// Uses STRIPE_SECRET_KEY securely from Render environment
-// ==========================================
+// SERVICE 2: STRIPE INTENT PROXY
 app.post('/api/payments/create-stripe-intent', async (req: Request, res: Response) => {
   const stripeKey = secretVault.STRIPE_SECRET_KEY || process.env.STRIPE_SECRET_KEY;
 
   try {
     const { amount, currency = 'usd', payment_method_types = ['card'], metadata } = req.body;
-
     if (!amount) {
       res.status(400).json({ success: false, error: 'Amount is required' });
       return;
@@ -349,7 +244,6 @@ app.post('/api/payments/create-stripe-intent', async (req: Request, res: Respons
         clientSecret: `pi_test_${Math.random().toString(36).substring(2, 16)}_secret_${Math.random().toString(36).substring(2, 16)}`,
         amount,
         currency,
-        metadata,
       });
       return;
     }
@@ -392,16 +286,12 @@ app.post('/api/payments/create-stripe-intent', async (req: Request, res: Respons
   }
 });
 
-// ==========================================
 // SERVICE 3: PAYSTACK INITIALIZE PROXY
-// Uses PAYSTACK_SECRET_KEY securely from Render environment
-// ==========================================
 app.post('/api/payments/paystack-init', async (req: Request, res: Response) => {
   const paystackKey = secretVault.PAYSTACK_SECRET_KEY || process.env.PAYSTACK_SECRET_KEY;
 
   try {
     const { email, amount, callback_url, metadata } = req.body;
-
     if (!email || !amount) {
       res.status(400).json({ success: false, error: 'Email and amount are required' });
       return;
@@ -443,11 +333,11 @@ app.post('/api/payments/paystack-init', async (req: Request, res: Response) => {
       reference: data.data.reference,
     });
   } catch (error: any) {
-    res.status(500).json({ success: false, error: error?.message || 'Paystack proxy error' });
+    res.status(500).json({ success: false, error: error?.message || 'Payment proxy error' });
   }
 });
 
-// Universal Dynamic Proxy Endpoint (Protected by App JWT)
+// Universal Proxy Endpoint
 app.all(['/api/proxy', '/api/proxy/*'], async (req: Request, res: Response) => {
   const queryTarget = req.query.target as string;
   const headerTarget = req.headers['x-target-url'] as string;
@@ -461,7 +351,7 @@ app.all(['/api/proxy', '/api/proxy/*'], async (req: Request, res: Response) => {
   try {
     const targetUrl = new URL(target);
     const outgoingHeaders = new Headers();
-    const headersToStrip = new Set(['host', 'authorization', 'x-app-jwt', 'x-user-token', 'x-app-secret', 'x-target-url', 'connection', 'content-length']);
+    const headersToStrip = new Set(['host', 'x-target-url', 'connection', 'content-length']);
 
     for (const [headerName, headerValue] of Object.entries(req.headers)) {
       if (!headersToStrip.has(headerName.toLowerCase()) && typeof headerValue === 'string') {
@@ -493,11 +383,11 @@ app.all(['/api/proxy', '/api/proxy/*'], async (req: Request, res: Response) => {
   }
 });
 
-// All other unmatched routes return standard 404 / 403 False Error
+// Catch-all route returns false 404
 app.use((req: Request, res: Response) => {
   renderFalseWarningPage(res, 404);
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🔒 Server listening on port ${PORT} with Automated App JWT Authentication`);
+  console.log(`🔒 Server listening on port ${PORT} with Permanent Frontend Domain Authorization`);
 });

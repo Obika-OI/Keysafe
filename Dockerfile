@@ -1,21 +1,22 @@
-# Lightweight Standalone Headless Backend Dockerfile for Render & Cloud Run
-FROM node:20-alpine AS builder
-WORKDIR /app
-COPY package*.json tsconfig.json ./
-RUN npm install --legacy-peer-deps
-COPY server.ts ./
-RUN npx esbuild server.ts --bundle --platform=node --format=esm --packages=external --outfile=dist/server.js
+# Multi-stage Python FastAPI Dockerfile for Render & Container Platforms
+FROM python:3.11-slim
 
-FROM node:20-alpine AS runner
 WORKDIR /app
-ENV NODE_ENV=production
-ENV PORT=3000
-COPY package*.json ./
-RUN npm install --omit=dev --legacy-peer-deps --no-audit --no-fund
-COPY --from=builder /app/dist ./dist
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PORT=3000
+
+# Install dependencies
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy FastAPI application
+COPY main.py ./
 
 EXPOSE 3000
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/healthz || exit 1
 
-CMD ["node", "dist/server.js"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:3000/healthz')" || exit 1
+
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-3000}"]
