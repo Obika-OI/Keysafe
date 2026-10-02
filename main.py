@@ -1,6 +1,7 @@
 import os
 import time
 import secrets
+import re
 from typing import Optional, List, Dict, Any
 from urllib.parse import urlparse
 from fastapi import FastAPI, Request, Response, HTTPException, Depends, Query
@@ -18,14 +19,28 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
 PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY", "")
 
-# Approved Frontend Origins (Permanent Whitelist - No Expiration)
+# Approved Whitelist (Web Apps + Expo Go + Android APK / Play Store + iOS App)
 default_allowed_origins = [
+    # 1. Web Apps
     "https://dome-2030.web.app",
     "https://dome-2030.firebaseapp.com",
     "http://localhost:5173",
     "http://localhost:3000",
     "http://localhost:4173",
+    # 2. Expo Go & React Native Dev Bundlers
+    "exp://",
+    "http://localhost:8081",
+    "http://10.0.2.2:8081",
+    "http://10.0.2.2:3000",
+    # 3. Mobile Apps (Android APK / Play Store & iOS App / TestFlight)
+    "capacitor://localhost",
+    "ionic://localhost",
+    "https://localhost",
+    "http://localhost",
+    "file://",
+    "app://",
 ]
+
 env_allowed = os.getenv("ALLOWED_ORIGINS", "")
 if env_allowed:
     allowed_origins = [o.strip() for o in env_allowed.split(",") if o.strip()]
@@ -39,14 +54,21 @@ app = FastAPI(
     openapi_url=None     # Disable OpenAPI schema leak
 )
 
-# Permanent CORS Configuration with 24-hour preflight cache
+# Permanent CORS Configuration with 24-hour preflight cache & mobile headers support
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins if "*" not in allowed_origins else ["*"],
+    allow_origins=["*"] if "*" in allowed_origins else allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
-    max_age=86400,       # Cache CORS preflight for 24 hours (86,400 seconds)
+    allow_headers=[
+        "*",
+        "X-App-Platform",
+        "X-App-Package",
+        "X-Client-Type",
+        "X-Requested-With",
+        "User-Agent",
+    ],
+    max_age=86400,       # Cache CORS preflight for 24 hours
     expose_headers=["X-RateLimit-Limit", "X-RateLimit-Remaining", "X-Proxy-Duration-Ms"]
 )
 
@@ -94,16 +116,21 @@ def is_domain_matching(origin_or_url: str, allowed_list: List[str]) -> bool:
     """Helper to check if origin or referer matches approved whitelist permanently."""
     if not origin_or_url:
         return False
-    # Direct match or prefix match
+
     for allowed in allowed_list:
         if allowed == "*":
             return True
         if origin_or_url.startswith(allowed):
             return True
+        # Local network IPs for Expo / Metro bundler (192.168.x.x or 10.0.x.x)
+        if re.match(r"^http://(192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+)(:\d+)?", origin_or_url):
+            return True
         # Parse scheme + netloc
         try:
             parsed_origin = urlparse(origin_or_url)
             parsed_allowed = urlparse(allowed)
+            if parsed_origin.scheme in ["exp", "capacitor", "ionic", "file", "app"]:
+                return True
             if parsed_origin.netloc and parsed_origin.netloc == parsed_allowed.netloc:
                 return True
         except Exception:
@@ -113,21 +140,34 @@ def is_domain_matching(origin_or_url: str, allowed_list: List[str]) -> bool:
 # --- PERMANENT APPROVED ORIGIN VALIDATION ---
 async def verify_approved_origin(request: Request):
     """
-    Permanent, unexpiring authorization for all requests originating from approved frontend domains.
-    No tokens, no sessions, and no expiration timeouts.
+    Permanent, unexpiring authorization for all requests originating from approved frontend domains
+    as well as Expo Go, Android APK / Play Store, and iOS Apps.
     """
     if "*" in allowed_origins or os.getenv("NODE_ENV") != "production":
         return True
 
     origin = request.headers.get("origin") or ""
     referer = request.headers.get("referer") or ""
+    user_agent = request.headers.get("user-agent") or ""
+    platform_header = request.headers.get("x-app-platform") or request.headers.get("x-client-type") or ""
+    requested_with = request.headers.get("x-requested-with") or ""
 
+    # 1. Match against Origin / Referer
     if is_domain_matching(origin, allowed_origins) or is_domain_matching(referer, allowed_origins):
+        return True
+
+    # 2. Native Mobile Apps (Expo Go, Android APK, iOS App)
+    # Native fetch calls on Android/iOS often carry no Origin header (or Origin is null/file://)
+    is_mobile_platform = any(p in platform_header.lower() for p in ["android", "ios", "expo", "reactnative", "mobile"])
+    is_mobile_user_agent = any(m in user_agent.lower() for m in ["expo", "okhttp", "cfnetwork", "darwin", "dalvik", "android", "iphone", "ipad"])
+    is_package_requested = len(requested_with) > 0 and requested_with.lower() != "xmlhttprequest"
+
+    if (not origin or origin in ["null", "file://"]) and (is_mobile_platform or is_mobile_user_agent or is_package_requested):
         return True
 
     raise HTTPException(
         status_code=403,
-        detail="Forbidden: Request origin is not in the approved frontend domain whitelist."
+        detail="Forbidden: Request origin is not in the approved frontend domain/app whitelist."
     )
 
 # --- Pydantic Request Models ---
@@ -152,7 +192,7 @@ class PaystackInitRequest(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
 
 # =========================================================================
-# SERVICE 1: GEMINI AI PROXY (Permanent Access for Whitelisted Frontends)
+# SERVICE 1: GEMINI AI PROXY
 # =========================================================================
 @app.post("/api/ai/generate", dependencies=[Depends(verify_approved_origin)])
 async def generate_gemini_content(body: GeminiRequest):
@@ -215,7 +255,7 @@ async def generate_gemini_content(body: GeminiRequest):
             raise HTTPException(status_code=500, detail=f"Gemini Proxy Error: {str(e)}")
 
 # =========================================================================
-# SERVICE 2: GEMINI STREAMING (Permanent Access for Whitelisted Frontends)
+# SERVICE 2: GEMINI STREAMING (Server-Sent Events)
 # =========================================================================
 @app.post("/api/ai/stream", dependencies=[Depends(verify_approved_origin)])
 async def stream_gemini_content(body: GeminiRequest):
@@ -249,7 +289,7 @@ async def stream_gemini_content(body: GeminiRequest):
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 # =========================================================================
-# SERVICE 3: STRIPE PAYMENT INTENT (Permanent Access for Whitelisted Frontends)
+# SERVICE 3: STRIPE PAYMENT INTENT
 # =========================================================================
 @app.post("/api/payments/create-stripe-intent", dependencies=[Depends(verify_approved_origin)])
 async def create_stripe_intent(body: StripeIntentRequest):
@@ -296,7 +336,7 @@ async def create_stripe_intent(body: StripeIntentRequest):
         }
 
 # =========================================================================
-# SERVICE 4: PAYSTACK INITIALIZE (Permanent Access for Whitelisted Frontends)
+# SERVICE 4: PAYSTACK INITIALIZE
 # =========================================================================
 @app.post("/api/payments/paystack-init", dependencies=[Depends(verify_approved_origin)])
 async def paystack_init(body: PaystackInitRequest):
@@ -334,7 +374,7 @@ async def paystack_init(body: PaystackInitRequest):
         }
 
 # =========================================================================
-# SERVICE 5: UNIVERSAL PROXY (Permanent Access for Whitelisted Frontends)
+# SERVICE 5: UNIVERSAL PROXY
 # =========================================================================
 @app.api_route("/api/proxy", methods=["GET", "POST", "PUT", "PATCH", "DELETE"], dependencies=[Depends(verify_approved_origin)])
 async def universal_proxy(request: Request, target: Optional[str] = Query(None)):

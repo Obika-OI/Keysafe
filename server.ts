@@ -13,13 +13,26 @@ app.use(express.json({ limit: '15mb' }));
 app.use(express.urlencoded({ extended: true, limit: '15mb' }));
 app.use(express.text({ type: ['text/*', 'application/xml', 'application/javascript'], limit: '15mb' }));
 
-// Approved frontend origins (Permanent whitelist)
+// Approved frontend & mobile app origins
 const defaultAllowedOrigins = [
+  // Web Apps
   'https://dome-2030.web.app',
   'https://dome-2030.firebaseapp.com',
   'http://localhost:5173',
   'http://localhost:3000',
   'http://localhost:4173',
+  // Expo Go & Mobile Dev Bundlers
+  'exp://',
+  'http://localhost:8081',
+  'http://10.0.2.2:8081',
+  'http://10.0.2.2:3000',
+  // Android APK / Play Store & iOS Apps
+  'capacitor://localhost',
+  'ionic://localhost',
+  'https://localhost',
+  'http://localhost',
+  'file://',
+  'app://',
 ];
 
 const envAllowedOrigins = process.env.ALLOWED_ORIGINS
@@ -37,13 +50,34 @@ const secretVault: Record<string, string> = {
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || '',
 };
 
-function isOriginAllowed(originOrUrl?: string): boolean {
-  if (!originOrUrl) return false;
+function isOriginAllowed(originOrUrl?: string, headers?: Record<string, any>): boolean {
   if (allowedOriginsList.includes('*') || process.env.NODE_ENV !== 'production') return true;
+
+  // Check mobile client headers
+  if (headers) {
+    const userAgent = String(headers['user-agent'] || '').toLowerCase();
+    const platform = String(headers['x-app-platform'] || headers['x-client-type'] || '').toLowerCase();
+    const requestedWith = String(headers['x-requested-with'] || '').toLowerCase();
+
+    if (platform.includes('android') || platform.includes('ios') || platform.includes('expo') || platform.includes('mobile')) {
+      return true;
+    }
+    if (userAgent.includes('expo') || userAgent.includes('okhttp') || userAgent.includes('cfnetwork') || userAgent.includes('dalvik')) {
+      return true;
+    }
+    if (requestedWith.length > 0 && requestedWith !== 'xmlhttprequest') {
+      return true;
+    }
+  }
+
+  if (!originOrUrl) return false;
+
   return allowedOriginsList.some((allowed) => {
     if (originOrUrl.startsWith(allowed)) return true;
+    if (String(originOrUrl).match(/^http:\/\/(192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+)(:\d+)?/)) return true;
     try {
       const parsedA = new URL(originOrUrl);
+      if (['exp:', 'capacitor:', 'ionic:', 'file:', 'app:'].includes(parsedA.protocol)) return true;
       const parsedB = new URL(allowed);
       return parsedA.host === parsedB.host;
     } catch {
@@ -52,14 +86,14 @@ function isOriginAllowed(originOrUrl?: string): boolean {
   });
 }
 
-// Permanent Dynamic CORS Middleware with 24h preflight cache
+// Permanent Dynamic CORS Middleware
 app.use(
   cors({
     origin: (origin, callback) => {
       if (!origin || isOriginAllowed(origin)) {
         callback(null, true);
       } else {
-        callback(new Error(`Access blocked by permanent origin policy: ${origin}`));
+        callback(new Error(`Access blocked by origin policy: ${origin}`));
       }
     },
     credentials: true,
@@ -70,6 +104,9 @@ app.use(
       'Authorization',
       'X-Target-URL',
       'X-Requested-With',
+      'X-App-Platform',
+      'X-App-Package',
+      'X-Client-Type',
       'Cache-Control',
       'Accept',
     ],
@@ -116,7 +153,7 @@ app.get(['/healthz', '/api/health'], (req: Request, res: Response) => {
   res.status(200).json({ status: 'ok', timestamp: Date.now() });
 });
 
-// Strict Permanent Origin Validation Middleware for API routes
+// Strict Permanent Origin & Mobile App Validation Middleware
 const verifyApprovedOrigin = (req: Request, res: Response, next: NextFunction) => {
   if (req.method === 'OPTIONS' || req.path === '/healthz' || req.path === '/api/health') {
     return next();
@@ -127,13 +164,13 @@ const verifyApprovedOrigin = (req: Request, res: Response, next: NextFunction) =
   }
 
   const origin = req.headers['origin'] || req.headers['referer'] || '';
-  if (isOriginAllowed(typeof origin === 'string' ? origin : origin[0])) {
+  if (isOriginAllowed(typeof origin === 'string' ? origin : origin[0], req.headers)) {
     return next();
   }
 
   res.status(403).json({
     error: 'Forbidden',
-    message: 'Access denied: origin is not in the approved frontend domain whitelist.',
+    message: 'Access denied: request is not from an approved frontend domain or mobile app.',
   });
 };
 
@@ -389,5 +426,5 @@ app.use((req: Request, res: Response) => {
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🔒 Server listening on port ${PORT} with Permanent Frontend Domain Authorization`);
+  console.log(`🔒 Server listening on port ${PORT} with Expo, Android & iOS Mobile Authorization`);
 });

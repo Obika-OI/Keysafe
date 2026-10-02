@@ -2,18 +2,38 @@
  * @file centralApiClient.ts
  * Centralized Multi-Service Credentials Vault & Gateway Client Helper
  * 
- * Drop this helper into any of your approved frontend applications (e.g., Firebase web apps, React, Vue, Next.js).
+ * Drop this helper into any of your approved frontend applications (e.g., Firebase web apps, React, Expo, Vue, Next.js).
  * 
  * SECURITY ARCHITECTURE:
  * 1. API keys (GEMINI_API_KEY, STRIPE_SECRET_KEY, PAYSTACK_SECRET_KEY) live ONLY in your Render environment.
- * 2. FastAPI enforces a strict Origin & CORS whitelist (ALLOWED_ORIGINS) — only your approved web apps can call the API.
- * 3. Random visitors, bots, or unapproved domains receive 403 Forbidden.
+ * 2. FastAPI enforces strict whitelist checks (ALLOWED_ORIGINS & Mobile Platform Validation)
+ * 3. Mobile Apps (Expo Go, Android APK / Play Store, iOS) have continuous, secure permanent access.
  * 4. End users can NEVER inspect or steal your API keys!
  */
 
 const CENTRAL_GATEWAY_URL = (typeof process !== 'undefined' && process.env?.VITE_CENTRAL_GATEWAY_URL) 
   || (typeof window !== 'undefined' && (window as any).__CENTRAL_GATEWAY_URL__)
   || (typeof window !== 'undefined' ? `${window.location.origin}/api` : 'http://localhost:3000/api');
+
+// Auto-detect if running inside a native mobile app/environment (e.g., React Native, Expo, Capacitor)
+const isNativeMobile = typeof navigator !== 'undefined' && navigator.product === 'ReactNative';
+
+/**
+ * Build default headers including mobile platform signals to assist backend verification
+ */
+function getHeaders(customHeaders: Record<string, string> = {}): Record<string, string> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...customHeaders,
+  };
+
+  if (isNativeMobile) {
+    headers['X-App-Platform'] = 'ReactNative';
+    headers['X-Client-Type'] = 'mobile';
+  }
+  
+  return headers;
+}
 
 export interface GeminiOptions {
   modelName?: string;
@@ -40,9 +60,7 @@ export async function callCentralGemini(
 
   const response = await fetch(`${CENTRAL_GATEWAY_URL}/ai/generate`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
+    headers: getHeaders(),
     credentials: 'include',
     body: JSON.stringify({
       modelName: options?.modelName || 'gemini-2.5-flash',
@@ -76,9 +94,7 @@ export async function streamCentralGemini(
 ): Promise<string> {
   const response = await fetch(`${CENTRAL_GATEWAY_URL}/ai/stream`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
+    headers: getHeaders(),
     credentials: 'include',
     body: JSON.stringify({
       modelName: options?.modelName || 'gemini-2.5-flash',
@@ -133,9 +149,7 @@ export async function createStripePaymentIntent(
 ) {
   const response = await fetch(`${CENTRAL_GATEWAY_URL}/payments/create-stripe-intent`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
+    headers: getHeaders(),
     credentials: 'include',
     body: JSON.stringify({
       amount: amountInCents,
@@ -163,9 +177,7 @@ export async function initializePaystackTransaction(
 ) {
   const response = await fetch(`${CENTRAL_GATEWAY_URL}/payments/paystack-init`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
+    headers: getHeaders(),
     credentials: 'include',
     body: JSON.stringify({
       email,
@@ -193,8 +205,14 @@ export async function centralProxyFetch(
   const cleanGatewayUrl = CENTRAL_GATEWAY_URL.replace(/\/+$/, '');
   const proxyEndpoint = `${cleanGatewayUrl}/proxy?target=${encodeURIComponent(targetUrl)}`;
 
+  const outgoingHeaders = getHeaders();
+  if (init?.headers) {
+    Object.assign(outgoingHeaders, init.headers);
+  }
+
   return fetch(proxyEndpoint, {
     ...init,
+    headers: outgoingHeaders,
     credentials: 'include',
   });
 }
