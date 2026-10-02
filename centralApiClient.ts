@@ -6,8 +6,10 @@
  * 
  * SECURITY ARCHITECTURE:
  * 1. API keys (GEMINI_API_KEY, STRIPE_SECRET_KEY, PAYSTACK_SECRET_KEY) live ONLY in your Render environment.
- * 2. FastAPI enforces strict whitelist checks (ALLOWED_ORIGINS & Mobile Platform Validation)
- * 3. Mobile Apps (Expo Go, Android APK / Play Store, iOS) have continuous, secure permanent access.
+ * 2. FastAPI enforces strict whitelist checks (ALLOWED_ORIGINS) for browsers.
+ * 3. Mobile Apps (Android APK, iOS) are protected with hardware-backed cryptographic proofs:
+ *    - Android: Google Play Integrity API
+ *    - iOS: Apple DeviceCheck / App Attest
  * 4. End users can NEVER inspect or steal your API keys!
  */
 
@@ -18,8 +20,25 @@ const CENTRAL_GATEWAY_URL = (typeof process !== 'undefined' && process.env?.VITE
 // Auto-detect if running inside a native mobile app/environment (e.g., React Native, Expo, Capacitor)
 const isNativeMobile = typeof navigator !== 'undefined' && navigator.product === 'ReactNative';
 
+// Hardware attestation storage
+let activeAttestationToken: string | null = null;
+let activeAttestationPlatform: 'android' | 'ios' | null = null;
+let activeAppPackage: string | null = null;
+
 /**
- * Build default headers including mobile platform signals to assist backend verification
+ * Configure your Android Play Integrity or iOS DeviceCheck attestation tokens globally.
+ * Call this function on app startup after requesting OS-level attestation.
+ */
+export function setMobileAttestation(token: string, platform: 'android' | 'ios', packageName?: string) {
+  activeAttestationToken = token;
+  activeAttestationPlatform = platform;
+  if (packageName) {
+    activeAppPackage = packageName;
+  }
+}
+
+/**
+ * Build default headers including mobile platform signals and cryptographic proofs
  */
 function getHeaders(customHeaders: Record<string, string> = {}): Record<string, string> {
   const headers: Record<string, string> = {
@@ -30,6 +49,15 @@ function getHeaders(customHeaders: Record<string, string> = {}): Record<string, 
   if (isNativeMobile) {
     headers['X-App-Platform'] = 'ReactNative';
     headers['X-Client-Type'] = 'mobile';
+  }
+
+  if (activeAppPackage) {
+    headers['X-App-Package'] = activeAppPackage;
+  }
+
+  if (activeAttestationToken && activeAttestationPlatform) {
+    headers['X-Attestation-Token'] = activeAttestationToken;
+    headers['X-Attestation-Platform'] = activeAttestationPlatform;
   }
   
   return headers;

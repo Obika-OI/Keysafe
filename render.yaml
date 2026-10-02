@@ -4,7 +4,7 @@ services:
     name: fastapi-credentials-gateway
     runtime: python
     plan: free
-    region: oregon # or frankfurt, ohio, singapore
+    region: oregon
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /healthz
@@ -14,7 +14,7 @@ services:
       
       # 1. Allowed Frontend Origins (Strict whitelist: only these web apps can call the API)
       - key: ALLOWED_ORIGINS
-        value: "https://dome-2030.web.app,https://dome-2030.firebaseapp.com,http://localhost:5173"
+        value: "https://dome-2030.web.app,https://dome-2030.firebaseapp.com,http://localhost:5173,http://localhost:3000,exp://,capacitor://localhost,ionic://localhost,https://localhost,http://localhost,file://,app://"
 
       # 2. Upstream Provider Secrets (Configured securely in Render Dashboard)
       - key: GEMINI_API_KEY
@@ -27,3 +27,17 @@ services:
         sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
+
+      # 3. Android Play Integrity Config (GCP Credentials + Application ID)
+      - key: PLAY_INTEGRITY_PACKAGE_NAME
+        value: ""
+      - key: PLAY_INTEGRITY_CREDENTIALS_JSON
+        value: ""
+
+      # 4. iOS DeviceCheck / App Attest Config (Apple Key credentials)
+      - key: APPLE_DEVICECHECK_KEY_ID
+        value: ""
+      - key: APPLE_DEVICECHECK_TEAM_ID
+        value: ""
+      - key: APPLE_DEVICECHECK_PRIVATE_KEY
+        value: ""

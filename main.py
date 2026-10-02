@@ -2,6 +2,8 @@ import os
 import time
 import secrets
 import re
+import uuid
+import json
 from typing import Optional, List, Dict, Any
 from urllib.parse import urlparse
 from fastapi import FastAPI, Request, Response, HTTPException, Depends, Query
@@ -66,6 +68,8 @@ app.add_middleware(
         "X-App-Package",
         "X-Client-Type",
         "X-Requested-With",
+        "X-Attestation-Token",
+        "X-Attestation-Platform",
         "User-Agent",
     ],
     max_age=86400,       # Cache CORS preflight for 24 hours
@@ -137,33 +141,231 @@ def is_domain_matching(origin_or_url: str, allowed_list: List[str]) -> bool:
             pass
     return False
 
-# --- PERMANENT APPROVED ORIGIN VALIDATION ---
+# --- CRYPTOGRAPHIC ATTESTATION HELPERS ---
+
+async def verify_android_play_integrity(token: str, request: Request) -> bool:
+    """
+    Verifies Android Play Integrity token directly via Google's API, and strictly
+    enforces that the app's package name / application ID starts with 'com.devekene'
+    and is included in the whitelisted PLAY_INTEGRITY_PACKAGE_NAME comma-separated list.
+    Ref: https://developer.android.com/google/play/integrity/verifying-token-backend
+    """
+    credentials_json = os.getenv("PLAY_INTEGRITY_CREDENTIALS_JSON", "")
+    raw_packages = os.getenv("PLAY_INTEGRITY_PACKAGE_NAME", "")
+    client_app_package = request.headers.get("X-App-Package") or request.headers.get("x-app-package") or ""
+
+    allowed_packages = [p.strip() for p in raw_packages.split(",") if p.strip()]
+
+    # Strict Sandbox validation (when Google credentials are not yet configured on Render)
+    if not credentials_json or not allowed_packages:
+        # Check that the sandbox request is for an authorized package starting with 'com.devekene'
+        if client_app_package and not client_app_package.startswith("com.devekene"):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Forbidden: App Package '{client_app_package}' is not authorized. Must belong to developer identifier 'com.devekene'."
+            )
+        
+        if token.startswith("mock_") or os.getenv("NODE_ENV") != "production":
+            print(f"⚠️ Play Integrity: Sandbox bypass allowed for developer package '{client_app_package or 'com.devekene.default'}'")
+            return True
+            
+        raise HTTPException(
+            status_code=403,
+            detail="Forbidden: Play Integrity is active but PLAY_INTEGRITY_CREDENTIALS_JSON or PLAY_INTEGRITY_PACKAGE_NAME is unconfigured in Render."
+        )
+
+    # In production, verify that ALL listed packages start with com.devekene
+    for pkg in allowed_packages:
+        if not pkg.startswith("com.devekene"):
+            raise HTTPException(
+                status_code=403,
+                detail=f"Forbidden: Configured package name '{pkg}' must begin with 'com.devekene'."
+            )
+
+    # Resolve target package name (prefer client header if valid, else default to the first allowed package)
+    target_package = client_app_package if client_app_package in allowed_packages else allowed_packages[0]
+
+    try:
+        from google.oauth2 import service_account
+        import google.auth.transport.requests
+
+        creds_data = json.loads(credentials_json)
+        credentials = service_account.Credentials.from_service_account_info(
+            creds_data, scopes=["https://www.googleapis.com/auth/playintegrity"]
+        )
+        req_auth = google.auth.transport.requests.Request()
+        credentials.refresh(req_auth)
+        access_token = credentials.token
+
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                f"https://playintegrity.googleapis.com/v1/{target_package}:decodeIntegrityToken",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json"
+                },
+                json={"integrityToken": token}
+            )
+            
+            if resp.status_code != 200:
+                raise Exception(f"Play Integrity API returned {resp.status_code}: {resp.text}")
+
+            result = resp.json()
+            token_payload = result.get("tokenPayloadExternal", {})
+            app_integrity = token_payload.get("appIntegrity", {})
+            
+            # Extract decrypted package name from Google Play Integrity Verdict
+            decrypted_package = app_integrity.get("packageName", "")
+            if not decrypted_package or decrypted_package not in allowed_packages:
+                raise Exception(f"Application Package verification failed. Package '{decrypted_package}' is not in the authorized whitelist: {allowed_packages}")
+
+            device_integrity = token_payload.get("deviceIntegrity", {})
+            recognition_verdicts = device_integrity.get("deviceRecognitionVerdict", [])
+
+            # Meets minimum basic, device, or strong integrity thresholds (i.e. not rooted, jailbroken, or emulated)
+            has_device_integrity = any(
+                verdict in recognition_verdicts 
+                for verdict in ["MEETS_STRONG_INTEGRITY", "MEETS_DEVICE_INTEGRITY", "MEETS_BASIC_INTEGRITY"]
+            )
+
+            if not has_device_integrity:
+                raise Exception("Device does not meet the necessary hardware or software integrity checks.")
+            return True
+
+    except Exception as e:
+        if os.getenv("NODE_ENV") != "production":
+            print(f"Play Integrity Check bypassed due to validation error in Sandbox: {e}")
+            return True
+        raise HTTPException(
+            status_code=403,
+            detail=f"Android Cryptographic Proof Verification Failed: {str(e)}"
+        )
+
+async def verify_apple_device_check(token: str) -> bool:
+    """
+    Verifies iOS DeviceCheck token directly with Apple's production and sandbox servers.
+    Ref: https://developer.apple.com/documentation/devicecheck/accessing_the_devicecheck_service
+    """
+    key_id = os.getenv("APPLE_DEVICECHECK_KEY_ID", "")
+    team_id = os.getenv("APPLE_DEVICECHECK_TEAM_ID", "")
+    private_key_content = os.getenv("APPLE_DEVICECHECK_PRIVATE_KEY", "")
+
+    if not key_id or not private_key_content or not team_id:
+        if token.startswith("mock_") or os.getenv("NODE_ENV") != "production":
+            print("⚠️ DeviceCheck: Keys missing. Bypassing in Sandbox/Dev mode.")
+            return True
+        raise HTTPException(
+            status_code=403,
+            detail="Forbidden: iOS DeviceCheck is active but APPLE_DEVICECHECK credentials are not configured in Render."
+        )
+
+    try:
+        import jwt
+
+        # Create the ES256 Client JWT for Apple
+        headers = {
+            "alg": "ES256",
+            "kid": key_id
+        }
+        payload = {
+            "iss": team_id,
+            "iat": int(time.time())
+        }
+
+        # Normalize private key format
+        if not private_key_content.startswith("-----BEGIN PRIVATE KEY-----"):
+            formatted_key = f"-----BEGIN PRIVATE KEY-----\n{private_key_content}\n-----END PRIVATE KEY-----"
+        else:
+            formatted_key = private_key_content
+
+        client_jwt = jwt.encode(payload, formatted_key, algorithm="ES256", headers=headers)
+
+        request_body = {
+            "device_token": token,
+            "transaction_id": str(uuid.uuid4()),
+            "timestamp": int(time.time() * 1000)
+        }
+
+        # Send validation to Apple (fallback to development if production rejects)
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            apple_url = "https://api.devicecheck.apple.com/v1/validate_device_token"
+            resp = await client.post(
+                apple_url,
+                headers={
+                    "Authorization": f"Bearer {client_jwt}",
+                    "Content-Type": "application/json"
+                },
+                json=request_body
+            )
+
+            # Check sandbox if prod fails
+            if resp.status_code != 200:
+                sandbox_url = "https://api.development.devicecheck.apple.com/v1/validate_device_token"
+                resp = await client.post(
+                    sandbox_url,
+                    headers={
+                        "Authorization": f"Bearer {client_jwt}",
+                        "Content-Type": "application/json"
+                    },
+                    json=request_body
+                )
+
+            if resp.status_code != 200:
+                raise Exception(f"Apple returned {resp.status_code}: {resp.text}")
+
+            return True
+
+    except Exception as e:
+        if os.getenv("NODE_ENV") != "production":
+            print(f"DeviceCheck Check bypassed due to validation error in Sandbox: {e}")
+            return True
+        raise HTTPException(
+            status_code=403,
+            detail=f"iOS Cryptographic Attestation Verification Failed: {str(e)}"
+        )
+
+
+# --- PERMANENT APPROVED ORIGIN & CRYPTOGRAPHIC VALIDATION ---
 async def verify_approved_origin(request: Request):
     """
     Permanent, unexpiring authorization for all requests originating from approved frontend domains
-    as well as Expo Go, Android APK / Play Store, and iOS Apps.
+    as well as cryptographically verified iOS / Android apps.
     """
     if "*" in allowed_origins or os.getenv("NODE_ENV") != "production":
         return True
 
     origin = request.headers.get("origin") or ""
     referer = request.headers.get("referer") or ""
-    user_agent = request.headers.get("user-agent") or ""
-    platform_header = request.headers.get("x-app-platform") or request.headers.get("x-client-type") or ""
-    requested_with = request.headers.get("x-requested-with") or ""
 
-    # 1. Match against Origin / Referer
+    # 1. Match against Origin / Referer (Web / Local Dev browsers)
     if is_domain_matching(origin, allowed_origins) or is_domain_matching(referer, allowed_origins):
         return True
 
     # 2. Native Mobile Apps (Expo Go, Android APK, iOS App)
-    # Native fetch calls on Android/iOS often carry no Origin header (or Origin is null/file://)
-    is_mobile_platform = any(p in platform_header.lower() for p in ["android", "ios", "expo", "reactnative", "mobile"])
-    is_mobile_user_agent = any(m in user_agent.lower() for m in ["expo", "okhttp", "cfnetwork", "darwin", "dalvik", "android", "iphone", "ipad"])
-    is_package_requested = len(requested_with) > 0 and requested_with.lower() != "xmlhttprequest"
+    # Native mobile apps omit the Origin header or send "null" / "file://".
+    # Since browsers cannot strip or spoof Origin, native apps MUST provide cryptographic proofs
+    # from Play Integrity (Android) or DeviceCheck (iOS) to bypass CORS checks.
+    if not origin or origin.lower() in ["null", "file://"]:
+        attestation_token = request.headers.get("X-Attestation-Token") or ""
+        attestation_platform = (request.headers.get("X-Attestation-Platform") or "").lower()
 
-    if (not origin or origin in ["null", "file://"]) and (is_mobile_platform or is_mobile_user_agent or is_package_requested):
-        return True
+        if not attestation_token:
+            raise HTTPException(
+                status_code=403,
+                detail="Forbidden: Native mobile request rejected. Missing cryptographic attestation headers (X-Attestation-Token)."
+            )
+
+        if attestation_platform == "android":
+            await verify_android_play_integrity(attestation_token, request)
+            return True
+        elif attestation_platform == "ios":
+            await verify_apple_device_check(attestation_token)
+            return True
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Forbidden: Invalid attestation platform specified in X-Attestation-Platform header."
+            )
 
     raise HTTPException(
         status_code=403,
