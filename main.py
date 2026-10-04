@@ -617,18 +617,45 @@ async def paystack_init(body: PaystackInitRequest):
 # =========================================================================
 # SERVICE 5: LIVEKIT ACCESS TOKEN GENERATION
 # =========================================================================
-@app.post("/api/livekit/token", dependencies=[Depends(verify_approved_origin)])
-async def get_livekit_token(body: LivekitTokenRequest):
+@app.api_route("/livekit", methods=["GET", "POST"], dependencies=[Depends(verify_approved_origin)])
+@app.api_route("/api/livekit", methods=["GET", "POST"], dependencies=[Depends(verify_approved_origin)])
+@app.api_route("/api/livekit/token", methods=["GET", "POST"], dependencies=[Depends(verify_approved_origin)])
+async def get_livekit_token(
+    request: Request,
+    room: Optional[str] = Query(None),
+    identity: Optional[str] = Query(None)
+):
     api_key = LIVEKIT_API_KEY
     api_secret = LIVEKIT_API_SECRET
+    
+    resolved_room = room
+    resolved_identity = identity
+    
+    # Resolve parameters from JSON body if method is POST
+    if request.method == "POST":
+        try:
+            body_bytes = await request.body()
+            if body_bytes:
+                req_json = json.loads(body_bytes)
+                if isinstance(req_json, dict):
+                    resolved_room = req_json.get("room") or resolved_room
+                    resolved_identity = req_json.get("identity") or resolved_identity
+        except Exception:
+            pass
+
+    if not resolved_room or not resolved_identity:
+        raise HTTPException(
+            status_code=400,
+            detail="Both 'room' and 'identity' parameters are required (pass as JSON body or query parameters)."
+        )
     
     if not api_key or not api_secret:
         # Mock/sandbox fallback token using pyjwt
         mock_payload = {
             "iss": "mock_api_key",
-            "sub": body.identity,
+            "sub": resolved_identity,
             "video": {
-                "room": body.room,
+                "room": resolved_room,
                 "roomJoin": True,
             }
         }
@@ -636,8 +663,8 @@ async def get_livekit_token(body: LivekitTokenRequest):
         return {
             "success": True,
             "token": mock_token,
-            "room": body.room,
-            "identity": body.identity,
+            "room": resolved_room,
+            "identity": resolved_identity,
             "isMock": True,
             "livekitUrl": LIVEKIT_URL or "ws://localhost:7880"
         }
@@ -647,11 +674,11 @@ async def get_livekit_token(body: LivekitTokenRequest):
         now = int(time.time())
         payload = {
             "iss": api_key,
-            "sub": body.identity,
+            "sub": resolved_identity,
             "nbf": now - 5,
             "exp": now + 3600, # 1 hour validity
             "video": {
-                "room": body.room,
+                "room": resolved_room,
                 "roomJoin": True,
                 "canPublish": True,
                 "canSubscribe": True
@@ -662,8 +689,8 @@ async def get_livekit_token(body: LivekitTokenRequest):
         return {
             "success": True,
             "token": token,
-            "room": body.room,
-            "identity": body.identity,
+            "room": resolved_room,
+            "identity": resolved_identity,
             "livekitUrl": LIVEKIT_URL or "wss://your-livekit-server.com"
         }
     except Exception as e:

@@ -459,12 +459,19 @@ app.post('/api/payments/paystack-init', async (req: Request, res: Response) => {
 });
 
 // SERVICE 4: LIVEKIT ACCESS TOKEN GENERATION
-app.post('/api/livekit/token', async (req: Request, res: Response) => {
+app.all(['/livekit', '/api/livekit', '/api/livekit/token'], async (req: Request, res: Response) => {
+  if (req.method !== 'GET' && req.method !== 'POST') {
+    res.status(405).json({ success: false, error: 'Method Not Allowed' });
+    return;
+  }
+
   const apiKey = secretVault.LIVEKIT_API_KEY || process.env.LIVEKIT_API_KEY;
   const apiSecret = secretVault.LIVEKIT_API_SECRET || process.env.LIVEKIT_API_SECRET;
   const livekitUrl = secretVault.LIVEKIT_URL || process.env.LIVEKIT_URL;
 
-  const { room, identity } = req.body;
+  const room = (req.query.room || req.body?.room) as string;
+  const identity = (req.query.identity || req.body?.identity) as string;
+
   if (!room || !identity) {
     res.status(400).json({ success: false, error: 'Room and identity are required' });
     return;
