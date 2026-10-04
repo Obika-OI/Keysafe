@@ -2,6 +2,7 @@ import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { GoogleGenAI } from '@google/genai';
+import * as jose from 'jose';
 
 dotenv.config();
 
@@ -55,6 +56,9 @@ const secretVault: Record<string, string> = {
   OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || '',
   CENTRAL_APP_SECRET: process.env.CENTRAL_APP_SECRET || '',
+  LIVEKIT_API_KEY: process.env.LIVEKIT_API_KEY || '',
+  LIVEKIT_API_SECRET: process.env.LIVEKIT_API_SECRET || '',
+  LIVEKIT_URL: process.env.LIVEKIT_URL || '',
 };
 
 function isOriginAllowed(originOrUrl?: string): boolean {
@@ -451,6 +455,71 @@ app.post('/api/payments/paystack-init', async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error?.message || 'Payment proxy error' });
+  }
+});
+
+// SERVICE 4: LIVEKIT ACCESS TOKEN GENERATION
+app.post('/api/livekit/token', async (req: Request, res: Response) => {
+  const apiKey = secretVault.LIVEKIT_API_KEY || process.env.LIVEKIT_API_KEY;
+  const apiSecret = secretVault.LIVEKIT_API_SECRET || process.env.LIVEKIT_API_SECRET;
+  const livekitUrl = secretVault.LIVEKIT_URL || process.env.LIVEKIT_URL;
+
+  const { room, identity } = req.body;
+  if (!room || !identity) {
+    res.status(400).json({ success: false, error: 'Room and identity are required' });
+    return;
+  }
+
+  try {
+    if (!apiKey || !apiSecret) {
+      // Mock/sandbox fallback token using jose
+      const mockSecret = new TextEncoder().encode('mock_secret');
+      const mockToken = await new jose.SignJWT({
+        video: {
+          room,
+          roomJoin: true,
+        },
+      })
+        .setProtectedHeader({ alg: 'HS256' })
+        .setIssuer('mock_api_key')
+        .setSubject(identity)
+        .sign(mockSecret);
+
+      res.json({
+        success: true,
+        token: mockToken,
+        room,
+        identity,
+        isMock: true,
+        livekitUrl: livekitUrl || 'ws://localhost:7880',
+      });
+      return;
+    }
+
+    const secret = new TextEncoder().encode(apiSecret);
+    const token = await new jose.SignJWT({
+      video: {
+        room,
+        roomJoin: true,
+        canPublish: true,
+        canSubscribe: true,
+      },
+    })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setIssuer(apiKey)
+      .setSubject(identity)
+      .setExpirationTime('1h')
+      .sign(secret);
+
+    res.json({
+      success: true,
+      token,
+      room,
+      identity,
+      livekitUrl: livekitUrl || 'wss://your-livekit-server.com',
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error?.message || 'Livekit token error' });
   }
 });
 

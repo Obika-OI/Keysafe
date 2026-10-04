@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import httpx
 from pydantic import BaseModel
 from dotenv import load_dotenv
+import jwt
 
 load_dotenv()
 
@@ -50,11 +51,14 @@ default_allowed_origins = [
     "app://",
 ]
 
+# Ensure default system origins are always whitelisted even if custom ALLOWED_ORIGINS is set on Render dashboard
 env_allowed = os.getenv("ALLOWED_ORIGINS", "")
-if env_allowed:
-    allowed_origins = [o.strip() for o in env_allowed.split(",") if o.strip()]
-else:
-    allowed_origins = default_allowed_origins
+env_origins = [o.strip() for o in env_allowed.split(",") if o.strip()] if env_allowed else []
+allowed_origins = list(set(default_allowed_origins + env_origins))
+
+LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY", "")
+LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET", "")
+LIVEKIT_URL = os.getenv("LIVEKIT_URL", "")
 
 app = FastAPI(
     title="Secure Edge Gateway",
@@ -424,6 +428,10 @@ class PaystackInitRequest(BaseModel):
     callback_url: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
 
+class LivekitTokenRequest(BaseModel):
+    room: str
+    identity: str
+
 # =========================================================================
 # SERVICE 1: GEMINI AI PROXY
 # =========================================================================
@@ -607,7 +615,62 @@ async def paystack_init(body: PaystackInitRequest):
         }
 
 # =========================================================================
-# SERVICE 5: UNIVERSAL PROXY
+# SERVICE 5: LIVEKIT ACCESS TOKEN GENERATION
+# =========================================================================
+@app.post("/api/livekit/token", dependencies=[Depends(verify_approved_origin)])
+async def get_livekit_token(body: LivekitTokenRequest):
+    api_key = LIVEKIT_API_KEY
+    api_secret = LIVEKIT_API_SECRET
+    
+    if not api_key or not api_secret:
+        # Mock/sandbox fallback token using pyjwt
+        mock_payload = {
+            "iss": "mock_api_key",
+            "sub": body.identity,
+            "video": {
+                "room": body.room,
+                "roomJoin": True,
+            }
+        }
+        mock_token = jwt.encode(mock_payload, "mock_secret", algorithm="HS256")
+        return {
+            "success": True,
+            "token": mock_token,
+            "room": body.room,
+            "identity": body.identity,
+            "isMock": True,
+            "livekitUrl": LIVEKIT_URL or "ws://localhost:7880"
+        }
+        
+    try:
+        import time
+        now = int(time.time())
+        payload = {
+            "iss": api_key,
+            "sub": body.identity,
+            "nbf": now - 5,
+            "exp": now + 3600, # 1 hour validity
+            "video": {
+                "room": body.room,
+                "roomJoin": True,
+                "canPublish": True,
+                "canSubscribe": True
+            }
+        }
+        
+        token = jwt.encode(payload, api_secret, algorithm="HS256")
+        return {
+            "success": True,
+            "token": token,
+            "room": body.room,
+            "identity": body.identity,
+            "livekitUrl": LIVEKIT_URL or "wss://your-livekit-server.com"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Livekit Token Generation Error: {str(e)}")
+
+# =========================================================================
+# SERVICE 6: UNIVERSAL PROXY
 # =========================================================================
 @app.api_route("/api/proxy", methods=["GET", "POST", "PUT", "PATCH", "DELETE"], dependencies=[Depends(verify_approved_origin)])
 async def universal_proxy(request: Request, target: Optional[str] = Query(None)):

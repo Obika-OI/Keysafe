@@ -27,6 +27,12 @@ services:
         sync: false
       - key: ANTHROPIC_API_KEY
         sync: false
+      - key: LIVEKIT_API_KEY
+        sync: false
+      - key: LIVEKIT_API_SECRET
+        sync: false
+      - key: LIVEKIT_URL
+        sync: false
 
       # 3. Android Play Integrity Config (GCP Credentials + Application ID)
       - key: PLAY_INTEGRITY_PACKAGE_NAME
