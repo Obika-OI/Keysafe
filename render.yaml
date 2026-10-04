@@ -14,7 +14,7 @@ services:
       
       # 1. Allowed Frontend Origins (Strict whitelist: only these web apps can call the API)
       - key: ALLOWED_ORIGINS
-        value: "https://dome-2030.web.app,https://dome-2030.firebaseapp.com,https://backpack-9e1e0.web.app,https://backpack-9e1e0.firebaseapp.com,https://backpack-edu.com,https://www.backpack-edu.com,https://ai.studio,https://ai.studio/apps/0a30e6e9-d4e8-4021-a7b3-e770d1b39d18,http://localhost:5173,http://localhost:3000,exp://,capacitor://localhost,ionic://localhost,https://localhost,http://localhost,file://,app://"
+        value: "https://dome-2030.web.app,https://dome-2030.firebaseapp.com,https://backpack-9e1e0.web.app,https://backpack-9e1e0.firebaseapp.com,https://backpack-edu.com,https://www.backpack-edu.com,https://ais-dev-em5hvt6ivvti3ncrt6y4oc-252111450112.europe-west3.run.app,https://ais-pre-em5hvt6ivvti3ncrt6y4oc-252111450112.europe-west3.run.app,http://localhost:5173,http://localhost:3000,exp://,capacitor://localhost,ionic://localhost,https://localhost,http://localhost,file://,app://"
 
       # 2. Upstream Provider Secrets (Configured securely in Render Dashboard)
       - key: GEMINI_API_KEY
