@@ -21,6 +21,8 @@ PORT = int(os.getenv("PORT", "3000"))
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
 PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY", "")
+PAYSTACK_LIVE_SECRET_KEY = os.getenv("PAYSTACK_LIVE_SECRET_KEY", "")
+PAYSTACK_TEST_SECRET_KEY = os.getenv("PAYSTACK_TEST_SECRET_KEY", "")
 CENTRAL_APP_SECRET = os.getenv("CENTRAL_APP_SECRET", "")
 
 # Approved Whitelist (Web Apps + Expo Go + Android APK / Play Store + iOS App)
@@ -427,6 +429,9 @@ class PaystackInitRequest(BaseModel):
     amount: int
     callback_url: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
+    is_live: Optional[bool] = None
+    isLive: Optional[bool] = None
+    mode: Optional[str] = None
 
 class LivekitTokenRequest(BaseModel):
     room: str
@@ -579,14 +584,34 @@ async def create_stripe_intent(body: StripeIntentRequest):
 # =========================================================================
 # SERVICE 4: PAYSTACK INITIALIZE
 # =========================================================================
+@app.post("/paystack-init", dependencies=[Depends(verify_approved_origin)])
+@app.post("/api/paystack-init", dependencies=[Depends(verify_approved_origin)])
 @app.post("/api/payments/paystack-init", dependencies=[Depends(verify_approved_origin)])
 async def paystack_init(body: PaystackInitRequest):
-    paystack_key = PAYSTACK_SECRET_KEY
+    # Determine mode & select appropriate Paystack secret key
+    is_live_req = False
+    if body.is_live is not None:
+        is_live_req = body.is_live
+    elif body.isLive is not None:
+        is_live_req = body.isLive
+    elif body.mode == "live":
+        is_live_req = True
+    elif body.metadata and (body.metadata.get("is_live") is True or body.metadata.get("isLive") is True or body.metadata.get("mode") == "live"):
+        is_live_req = True
+
+    # Use live key if requested, otherwise test key, with defaults cascading to PAYSTACK_SECRET_KEY
+    if is_live_req:
+        paystack_key = PAYSTACK_LIVE_SECRET_KEY or PAYSTACK_SECRET_KEY
+    else:
+        paystack_key = PAYSTACK_TEST_SECRET_KEY or PAYSTACK_SECRET_KEY or PAYSTACK_LIVE_SECRET_KEY
+
     if not paystack_key:
         return {
             "success": True,
             "authorization_url": f"https://checkout.paystack.com/mock_{secrets.token_hex(8)}",
             "reference": f"ref_{secrets.token_hex(10)}",
+            "isMock": True,
+            "mode": "test"
         }
 
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -612,6 +637,7 @@ async def paystack_init(body: PaystackInitRequest):
             "authorization_url": data.get("data", {}).get("authorization_url"),
             "access_code": data.get("data", {}).get("access_code"),
             "reference": data.get("data", {}).get("reference"),
+            "mode": "live" if is_live_req else "test"
         }
 
 # =========================================================================

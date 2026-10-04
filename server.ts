@@ -53,6 +53,8 @@ const secretVault: Record<string, string> = {
   GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',
   STRIPE_SECRET_KEY: process.env.STRIPE_SECRET_KEY || '',
   PAYSTACK_SECRET_KEY: process.env.PAYSTACK_SECRET_KEY || '',
+  PAYSTACK_LIVE_SECRET_KEY: process.env.PAYSTACK_LIVE_SECRET_KEY || '',
+  PAYSTACK_TEST_SECRET_KEY: process.env.PAYSTACK_TEST_SECRET_KEY || '',
   OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || '',
   CENTRAL_APP_SECRET: process.env.CENTRAL_APP_SECRET || '',
@@ -408,21 +410,37 @@ app.post('/api/payments/create-stripe-intent', async (req: Request, res: Respons
 });
 
 // SERVICE 3: PAYSTACK INITIALIZE PROXY
-app.post('/api/payments/paystack-init', async (req: Request, res: Response) => {
-  const paystackKey = secretVault.PAYSTACK_SECRET_KEY || process.env.PAYSTACK_SECRET_KEY;
-
+app.post(['/paystack-init', '/api/paystack-init', '/api/payments/paystack-init'], async (req: Request, res: Response) => {
   try {
-    const { email, amount, callback_url, metadata } = req.body;
+    const { email, amount, callback_url, metadata, is_live, isLive, mode } = req.body;
     if (!email || !amount) {
       res.status(400).json({ success: false, error: 'Email and amount are required' });
       return;
     }
+
+    // Determine mode & select appropriate Paystack secret key
+    let isLiveReq = false;
+    if (is_live !== undefined) {
+      isLiveReq = !!is_live;
+    } else if (isLive !== undefined) {
+      isLiveReq = !!isLive;
+    } else if (mode === 'live') {
+      isLiveReq = true;
+    } else if (metadata && (metadata.is_live === true || metadata.isLive === true || metadata.mode === 'live')) {
+      isLiveReq = true;
+    }
+
+    const paystackKey = isLiveReq
+      ? (secretVault.PAYSTACK_LIVE_SECRET_KEY || secretVault.PAYSTACK_SECRET_KEY)
+      : (secretVault.PAYSTACK_TEST_SECRET_KEY || secretVault.PAYSTACK_SECRET_KEY || secretVault.PAYSTACK_LIVE_SECRET_KEY);
 
     if (!paystackKey) {
       res.json({
         success: true,
         authorization_url: `https://checkout.paystack.com/sample_auth_${Math.random().toString(36).substring(2, 10)}`,
         reference: `ref_${Math.random().toString(36).substring(2, 12)}`,
+        isMock: true,
+        mode: 'test',
       });
       return;
     }
@@ -452,6 +470,7 @@ app.post('/api/payments/paystack-init', async (req: Request, res: Response) => {
       authorization_url: data.data.authorization_url,
       access_code: data.data.access_code,
       reference: data.data.reference,
+      mode: isLiveReq ? 'live' : 'test',
     });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error?.message || 'Payment proxy error' });

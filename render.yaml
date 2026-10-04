@@ -23,6 +23,10 @@ services:
         sync: false
       - key: PAYSTACK_SECRET_KEY
         sync: false
+      - key: PAYSTACK_LIVE_SECRET_KEY
+        sync: false
+      - key: PAYSTACK_TEST_SECRET_KEY
+        sync: false
       - key: OPENAI_API_KEY
         sync: false
       - key: ANTHROPIC_API_KEY
