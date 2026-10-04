@@ -18,6 +18,12 @@ const defaultAllowedOrigins = [
   // Web Apps
   'https://dome-2030.web.app',
   'https://dome-2030.firebaseapp.com',
+  'https://backpack-9e1e0.web.app',
+  'https://backpack-9e1e0.firebaseapp.com',
+  'https://backpack-edu.com',
+  'https://www.backpack-edu.com',
+  'https://ai.studio',
+  'https://ai.studio/apps/0a30e6e9-d4e8-4021-a7b3-e770d1b39d18',
   'http://localhost:5173',
   'http://localhost:3000',
   'http://localhost:4173',
@@ -48,6 +54,7 @@ const secretVault: Record<string, string> = {
   PAYSTACK_SECRET_KEY: process.env.PAYSTACK_SECRET_KEY || '',
   OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || '',
+  CENTRAL_APP_SECRET: process.env.CENTRAL_APP_SECRET || '',
 };
 
 function isOriginAllowed(originOrUrl?: string): boolean {
@@ -144,8 +151,25 @@ const renderFalseWarningPage = (res: Response, status = 403) => {
 </html>`);
 };
 
-// Root route shows false warning to any direct browser visitor
+// Root route shows false warning to any direct browser visitor, but allows authorized secrets-carrying backends
 app.get('/', (req: Request, res: Response) => {
+  const appSecret = secretVault.CENTRAL_APP_SECRET || process.env.CENTRAL_APP_SECRET || '';
+  if (appSecret) {
+    const headerSecret = req.headers['x-app-secret'] || '';
+    const authHeader = req.headers['authorization'] || '';
+    let bearerSecret = '';
+    if (authHeader.toLowerCase().startsWith('bearer ')) {
+      bearerSecret = authHeader.substring(7).trim();
+    }
+
+    if (headerSecret === appSecret || bearerSecret === appSecret) {
+      res.status(200).json({
+        success: true,
+        message: 'Access authorized. Welcome to KeySafe Gateway Cluster.',
+      });
+      return;
+    }
+  }
   renderFalseWarningPage(res, 403);
 });
 
@@ -156,6 +180,21 @@ app.get(['/healthz', '/api/health'], (req: Request, res: Response) => {
 
 // Strict Permanent Origin & Cryptographic Attestation Validation Middleware
 const verifyApprovedOrigin = async (req: Request, res: Response, next: NextFunction) => {
+  // 0. Check for Trusted Shared App Secret (Server-to-Server and trusted backdoors)
+  const appSecret = secretVault.CENTRAL_APP_SECRET || process.env.CENTRAL_APP_SECRET || '';
+  if (appSecret) {
+    const headerSecret = req.headers['x-app-secret'] || '';
+    const authHeader = req.headers['authorization'] || '';
+    let bearerSecret = '';
+    if (authHeader.toLowerCase().startsWith('bearer ')) {
+      bearerSecret = authHeader.substring(7).trim();
+    }
+
+    if (headerSecret === appSecret || bearerSecret === appSecret) {
+      return next();
+    }
+  }
+
   if (req.method === 'OPTIONS' || req.path === '/healthz' || req.path === '/api/health') {
     return next();
   }

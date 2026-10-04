@@ -20,12 +20,19 @@ PORT = int(os.getenv("PORT", "3000"))
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
 PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY", "")
+CENTRAL_APP_SECRET = os.getenv("CENTRAL_APP_SECRET", "")
 
 # Approved Whitelist (Web Apps + Expo Go + Android APK / Play Store + iOS App)
 default_allowed_origins = [
     # 1. Web Apps
     "https://dome-2030.web.app",
     "https://dome-2030.firebaseapp.com",
+    "https://backpack-9e1e0.web.app",
+    "https://backpack-9e1e0.firebaseapp.com",
+    "https://backpack-edu.com",
+    "https://www.backpack-edu.com",
+    "https://ai.studio",
+    "https://ai.studio/apps/0a30e6e9-d4e8-4021-a7b3-e770d1b39d18",
     "http://localhost:5173",
     "http://localhost:3000",
     "http://localhost:4173",
@@ -105,9 +112,22 @@ def render_false_warning_page() -> str:
 </body>
 </html>"""
 
-# Root endpoint displays false 403 Forbidden warning to web browsers
-@app.get("/", response_class=HTMLResponse, status_code=403)
-async def root_disguise():
+# Root endpoint displays false 403 Forbidden warning to browsers, but allows authorized secrets-carrying backends
+@app.get("/")
+async def root_disguise(request: Request):
+    if CENTRAL_APP_SECRET:
+        header_secret = request.headers.get("X-App-Secret") or ""
+        auth_header = request.headers.get("Authorization") or ""
+        bearer_secret = ""
+        if auth_header.lower().startswith("bearer "):
+            bearer_secret = auth_header[7:].strip()
+        
+        if header_secret == CENTRAL_APP_SECRET or bearer_secret == CENTRAL_APP_SECRET:
+            return {
+                "success": True,
+                "message": "Access authorized. Welcome to KeySafe Gateway Cluster."
+            }
+            
     return HTMLResponse(content=render_false_warning_page(), status_code=403)
 
 # Render Health Check (Minimal non-leaking status)
@@ -328,9 +348,20 @@ async def verify_apple_device_check(token: str) -> bool:
 # --- PERMANENT APPROVED ORIGIN & CRYPTOGRAPHIC VALIDATION ---
 async def verify_approved_origin(request: Request):
     """
-    Permanent, unexpiring authorization for all requests originating from approved frontend domains
-    as well as cryptographically verified iOS / Android apps.
+    Permanent, unexpiring authorization for all requests originating from approved frontend domains,
+    cryptographically verified iOS / Android apps, or trusted backends carrying CENTRAL_APP_SECRET.
     """
+    # 0. Check for Trusted Shared App Secret (Server-to-Server and trusted backdoors)
+    if CENTRAL_APP_SECRET:
+        header_secret = request.headers.get("X-App-Secret") or ""
+        auth_header = request.headers.get("Authorization") or ""
+        bearer_secret = ""
+        if auth_header.lower().startswith("bearer "):
+            bearer_secret = auth_header[7:].strip()
+            
+        if header_secret == CENTRAL_APP_SECRET or bearer_secret == CENTRAL_APP_SECRET:
+            return True
+
     if "*" in allowed_origins or os.getenv("NODE_ENV") != "production":
         return True
 
