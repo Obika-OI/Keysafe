@@ -540,6 +540,19 @@ async def stream_gemini_content(body: GeminiRequest):
 @app.post("/api/payments/create-stripe-intent", dependencies=[Depends(verify_approved_origin)])
 async def create_stripe_intent(body: StripeIntentRequest):
     stripe_key = STRIPE_SECRET_KEY
+    if stripe_key:
+        stripe_key = stripe_key.strip().replace('"', '').replace("'", "")
+
+    # Proactive Validation: Warn if they configured a public key (starts with pk_) instead of a secret key (must start with sk_)
+    if stripe_key and stripe_key.startswith("pk_"):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "status": False,
+                "message": "Invalid key configuration: It looks like you configured a Stripe PUBLIC key (starts with 'pk_') instead of a SECRET key (must start with 'sk_') in your Render environment variables (e.g. STRIPE_SECRET_KEY)."
+            }
+        )
+
     if not stripe_key:
         return {
             "success": True,
@@ -604,6 +617,19 @@ async def paystack_init(body: PaystackInitRequest):
         paystack_key = PAYSTACK_LIVE_SECRET_KEY or PAYSTACK_SECRET_KEY
     else:
         paystack_key = PAYSTACK_TEST_SECRET_KEY or PAYSTACK_SECRET_KEY or PAYSTACK_LIVE_SECRET_KEY
+
+    if paystack_key:
+        paystack_key = paystack_key.strip().replace('"', '').replace("'", "")
+
+    # Proactive Validation: Warn if they configured a public key (starts with pk_) instead of a secret key (must start with sk_)
+    if paystack_key and paystack_key.startswith("pk_"):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "status": False,
+                "message": "Invalid key configuration: It looks like you configured a Paystack PUBLIC key (starts with 'pk_') instead of a SECRET key (must start with 'sk_') in your Render environment variables (e.g. PAYSTACK_TEST_SECRET_KEY / PAYSTACK_LIVE_SECRET_KEY)."
+            }
+        )
 
     if not paystack_key:
         return {

@@ -352,7 +352,19 @@ app.post('/api/ai/stream', async (req: Request, res: Response) => {
 
 // SERVICE 2: STRIPE INTENT PROXY
 app.post('/api/payments/create-stripe-intent', async (req: Request, res: Response) => {
-  const stripeKey = secretVault.STRIPE_SECRET_KEY || process.env.STRIPE_SECRET_KEY;
+  let stripeKey = secretVault.STRIPE_SECRET_KEY || process.env.STRIPE_SECRET_KEY;
+  if (stripeKey) {
+    stripeKey = stripeKey.trim().replace(/^["']|["']$/g, '');
+  }
+
+  // Proactive Validation: Warn if they configured a public key (starts with pk_) instead of a secret key (must start with sk_)
+  if (stripeKey && stripeKey.startsWith('pk_')) {
+    res.status(400).json({
+      success: false,
+      error: "Invalid key configuration: It looks like you configured a Stripe PUBLIC key (starts with 'pk_') instead of a SECRET key (must start with 'sk_') in your Render environment variables (e.g. STRIPE_SECRET_KEY)."
+    });
+    return;
+  }
 
   try {
     const { amount, currency = 'usd', payment_method_types = ['card'], metadata } = req.body;
