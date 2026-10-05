@@ -444,7 +444,16 @@ app.post(['/paystack-init', '/api/paystack-init', '/api/payments/paystack-init']
 
     const paystackKey = isLiveReq
       ? (secretVault.PAYSTACK_LIVE_SECRET_KEY || secretVault.PAYSTACK_SECRET_KEY)
-      : (secretVault.PAYSTACK_TEST_SECRET_KEY || secretVault.PAYSTACK_SECRET_KEY || secretVault.PAYSTACK_LIVE_SECRET_KEY);
+      : (secretVault.PAYSTACK_TEST_SECRET_KEY || secretVault.PAYSTACK_SECRET_KEY);
+
+    // If they are trying to initialize a test/sandbox transaction, but only have a live key configured:
+    if (!isLiveReq && !paystackKey && secretVault.PAYSTACK_LIVE_SECRET_KEY) {
+      res.status(400).json({
+        success: false,
+        error: "PAYSTACK_TEST_SECRET_KEY is not defined in your Render environment variables. You have configured PAYSTACK_LIVE_SECRET_KEY, but to use it you must explicitly request a live transaction by passing 'is_live': true in your JSON request body or metadata."
+      });
+      return;
+    }
 
     if (!paystackKey) {
       res.json({
@@ -487,6 +496,38 @@ app.post(['/paystack-init', '/api/paystack-init', '/api/payments/paystack-init']
   } catch (error: any) {
     res.status(500).json({ success: false, error: error?.message || 'Payment proxy error' });
   }
+});
+
+// SERVICE 3.5: SECURE CONFIGURATION DIAGNOSTICS
+app.get(['/diagnostics', '/api/diagnostics'], (req: Request, res: Response) => {
+  const analyzeKey = (key?: string) => {
+    if (!key) {
+      return { defined: false, length: 0, prefix: null, suffix: null };
+    }
+    const cleaned = key.trim().replace(/^["']|["']$/g, '');
+    return {
+      defined: true,
+      length: cleaned.length,
+      prefix: cleaned.length >= 8 ? `${cleaned.substring(0, 8)}...` : cleaned,
+      suffix: cleaned.length >= 4 ? `...${cleaned.substring(cleaned.length - 4)}` : cleaned,
+      has_quotes: key.includes('"') || key.includes("'"),
+      is_public_key: cleaned.startsWith('pk_'),
+      is_secret_key: cleaned.startsWith('sk_'),
+    };
+  };
+
+  res.json({
+    success: true,
+    environment: {
+      PAYSTACK_SECRET_KEY: analyzeKey(secretVault.PAYSTACK_SECRET_KEY || process.env.PAYSTACK_SECRET_KEY),
+      PAYSTACK_TEST_SECRET_KEY: analyzeKey(secretVault.PAYSTACK_TEST_SECRET_KEY || process.env.PAYSTACK_TEST_SECRET_KEY),
+      PAYSTACK_LIVE_SECRET_KEY: analyzeKey(secretVault.PAYSTACK_LIVE_SECRET_KEY || process.env.PAYSTACK_LIVE_SECRET_KEY),
+      STRIPE_SECRET_KEY: analyzeKey(secretVault.STRIPE_SECRET_KEY || process.env.STRIPE_SECRET_KEY),
+      GEMINI_API_KEY_defined: !!(secretVault.GEMINI_API_KEY || process.env.GEMINI_API_KEY),
+      LIVEKIT_API_KEY_defined: !!(secretVault.LIVEKIT_API_KEY || process.env.LIVEKIT_API_KEY),
+      LIVEKIT_API_SECRET_defined: !!(secretVault.LIVEKIT_API_SECRET || process.env.LIVEKIT_API_SECRET),
+    },
+  });
 });
 
 // SERVICE 4: LIVEKIT ACCESS TOKEN GENERATION

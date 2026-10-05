@@ -616,7 +616,17 @@ async def paystack_init(body: PaystackInitRequest):
     if is_live_req:
         paystack_key = PAYSTACK_LIVE_SECRET_KEY or PAYSTACK_SECRET_KEY
     else:
-        paystack_key = PAYSTACK_TEST_SECRET_KEY or PAYSTACK_SECRET_KEY or PAYSTACK_LIVE_SECRET_KEY
+        paystack_key = PAYSTACK_TEST_SECRET_KEY or PAYSTACK_SECRET_KEY
+
+    # If they are trying to initialize a test/sandbox transaction, but only have a live key configured:
+    if not is_live_req and not paystack_key and PAYSTACK_LIVE_SECRET_KEY:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "status": False,
+                "message": "PAYSTACK_TEST_SECRET_KEY is not defined in your Render environment variables. You have configured PAYSTACK_LIVE_SECRET_KEY, but to use it you must explicitly request a live transaction by passing 'is_live': true in your JSON request body or metadata."
+            }
+        )
 
     if paystack_key:
         paystack_key = paystack_key.strip().replace('"', '').replace("'", "")
@@ -665,6 +675,39 @@ async def paystack_init(body: PaystackInitRequest):
             "reference": data.get("data", {}).get("reference"),
             "mode": "live" if is_live_req else "test"
         }
+
+# =========================================================================
+# SERVICE 4.5: SECURE CONFIGURATION DIAGNOSTICS
+# =========================================================================
+@app.get("/diagnostics")
+@app.get("/api/diagnostics")
+async def secure_diagnostics():
+    def analyze_key(key: str) -> dict:
+        if not key:
+            return {"defined": False, "length": 0, "prefix": None, "suffix": None}
+        cleaned = key.strip().replace('"', '').replace("'", "")
+        return {
+            "defined": True,
+            "length": len(cleaned),
+            "prefix": f"{cleaned[:8]}..." if len(cleaned) >= 8 else cleaned,
+            "suffix": f"...{cleaned[-4:]}" if len(cleaned) >= 4 else cleaned,
+            "has_quotes": '"' in key or "'" in key,
+            "is_public_key": cleaned.startswith("pk_"),
+            "is_secret_key": cleaned.startswith("sk_"),
+        }
+
+    return {
+        "success": True,
+        "environment": {
+            "PAYSTACK_SECRET_KEY": analyze_key(PAYSTACK_SECRET_KEY),
+            "PAYSTACK_TEST_SECRET_KEY": analyze_key(PAYSTACK_TEST_SECRET_KEY),
+            "PAYSTACK_LIVE_SECRET_KEY": analyze_key(PAYSTACK_LIVE_SECRET_KEY),
+            "STRIPE_SECRET_KEY": analyze_key(STRIPE_SECRET_KEY),
+            "GEMINI_API_KEY_defined": bool(GEMINI_API_KEY),
+            "LIVEKIT_API_KEY_defined": bool(LIVEKIT_API_KEY),
+            "LIVEKIT_API_SECRET_defined": bool(LIVEKIT_API_SECRET),
+        }
+    }
 
 # =========================================================================
 # SERVICE 5: LIVEKIT ACCESS TOKEN GENERATION
