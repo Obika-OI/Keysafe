@@ -431,7 +431,10 @@ class PaystackInitRequest(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
     is_live: Optional[bool] = None
     isLive: Optional[bool] = None
+    isProduction: Optional[bool] = None
     mode: Optional[str] = None
+    environment: Optional[str] = None
+    env: Optional[str] = None
 
 class PaystackSubaccountRequest(BaseModel):
     business_name: str
@@ -440,7 +443,10 @@ class PaystackSubaccountRequest(BaseModel):
     percentage_charge: float
     is_live: Optional[bool] = None
     isLive: Optional[bool] = None
+    isProduction: Optional[bool] = None
     mode: Optional[str] = None
+    environment: Optional[str] = None
+    env: Optional[str] = None
 
 class PaystackSplitInitRequest(BaseModel):
     email: str
@@ -450,7 +456,10 @@ class PaystackSplitInitRequest(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
     is_live: Optional[bool] = None
     isLive: Optional[bool] = None
+    isProduction: Optional[bool] = None
     mode: Optional[str] = None
+    environment: Optional[str] = None
+    env: Optional[str] = None
 
 class LivekitTokenRequest(BaseModel):
     room: str
@@ -613,6 +622,46 @@ async def create_stripe_intent(body: StripeIntentRequest):
             "status": data.get("status"),
         }
 
+def check_is_live_request(body) -> bool:
+    # 1. Direct flags on root level
+    if getattr(body, "is_live", None) is not None:
+        return bool(body.is_live)
+    if getattr(body, "isLive", None) is not None:
+        return bool(body.isLive)
+    if getattr(body, "isProduction", None) is not None:
+        return bool(body.isProduction)
+
+    # 2. String values of mode, environment, env
+    mode_val = getattr(body, "mode", None)
+    if mode_val in ("live", "production", "prod"):
+        return True
+
+    env_val = getattr(body, "environment", None)
+    if env_val in ("live", "production", "prod"):
+        return True
+
+    env_short_val = getattr(body, "env", None)
+    if env_short_val in ("live", "production", "prod"):
+        return True
+
+    # 3. Inside metadata dictionary
+    meta = getattr(body, "metadata", None)
+    if meta and isinstance(meta, dict):
+        if meta.get("is_live") is not None:
+            return bool(meta.get("is_live"))
+        if meta.get("isLive") is not None:
+            return bool(meta.get("isLive"))
+        if meta.get("isProduction") is not None:
+            return bool(meta.get("isProduction"))
+        if meta.get("mode") in ("live", "production", "prod"):
+            return True
+        if meta.get("environment") in ("live", "production", "prod"):
+            return True
+        if meta.get("env") in ("live", "production", "prod"):
+            return True
+
+    return False
+
 # =========================================================================
 # SERVICE 4: PAYSTACK INITIALIZE
 # =========================================================================
@@ -621,15 +670,7 @@ async def create_stripe_intent(body: StripeIntentRequest):
 @app.post("/api/payments/paystack-init", dependencies=[Depends(verify_approved_origin)])
 async def paystack_init(body: PaystackInitRequest):
     # Determine mode & select appropriate Paystack secret key
-    is_live_req = False
-    if body.is_live is not None:
-        is_live_req = body.is_live
-    elif body.isLive is not None:
-        is_live_req = body.isLive
-    elif body.mode == "live":
-        is_live_req = True
-    elif body.metadata and (body.metadata.get("is_live") is True or body.metadata.get("isLive") is True or body.metadata.get("mode") == "live"):
-        is_live_req = True
+    is_live_req = check_is_live_request(body)
 
     # Use live key if requested, otherwise test key, with defaults cascading to PAYSTACK_SECRET_KEY
     if is_live_req:
@@ -703,13 +744,7 @@ async def paystack_init(body: PaystackInitRequest):
 @app.post("/api/payments/subaccount", dependencies=[Depends(verify_approved_origin)])
 async def create_paystack_subaccount(body: PaystackSubaccountRequest):
     # Determine mode & select appropriate Paystack secret key
-    is_live_req = False
-    if body.is_live is not None:
-        is_live_req = body.is_live
-    elif body.isLive is not None:
-        is_live_req = body.isLive
-    elif body.mode == "live":
-        is_live_req = True
+    is_live_req = check_is_live_request(body)
 
     if is_live_req:
         paystack_key = PAYSTACK_LIVE_SECRET_KEY or PAYSTACK_SECRET_KEY
@@ -781,15 +816,7 @@ async def create_paystack_subaccount(body: PaystackSubaccountRequest):
 @app.post("/api/payments/paystack-split-init", dependencies=[Depends(verify_approved_origin)])
 async def init_paystack_split_payment(body: PaystackSplitInitRequest):
     # Determine mode & select appropriate Paystack secret key
-    is_live_req = False
-    if body.is_live is not None:
-        is_live_req = body.is_live
-    elif body.isLive is not None:
-        is_live_req = body.isLive
-    elif body.mode == "live":
-        is_live_req = True
-    elif body.metadata and (body.metadata.get("is_live") is True or body.metadata.get("isLive") is True or body.metadata.get("mode") == "live"):
-        is_live_req = True
+    is_live_req = check_is_live_request(body)
 
     if is_live_req:
         paystack_key = PAYSTACK_LIVE_SECRET_KEY or PAYSTACK_SECRET_KEY

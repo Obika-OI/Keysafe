@@ -421,26 +421,44 @@ app.post('/api/payments/create-stripe-intent', async (req: Request, res: Respons
   }
 });
 
+function checkIsLiveRequest(body: any): boolean {
+  if (!body) return false;
+
+  // 1. Direct boolean flags
+  if (body.is_live !== undefined) return !!body.is_live;
+  if (body.isLive !== undefined) return !!body.isLive;
+  if (body.isProduction !== undefined) return !!body.isProduction;
+
+  // 2. String values of mode, environment, env
+  if (['live', 'production', 'prod'].includes(body.mode)) return true;
+  if (['live', 'production', 'prod'].includes(body.environment)) return true;
+  if (['live', 'production', 'prod'].includes(body.env)) return true;
+
+  // 3. Inside metadata dictionary
+  const meta = body.metadata;
+  if (meta && typeof meta === 'object') {
+    if (meta.is_live !== undefined) return !!meta.is_live;
+    if (meta.isLive !== undefined) return !!meta.isLive;
+    if (meta.isProduction !== undefined) return !!meta.isProduction;
+    if (['live', 'production', 'prod'].includes(meta.mode)) return true;
+    if (['live', 'production', 'prod'].includes(meta.environment)) return true;
+    if (['live', 'production', 'prod'].includes(meta.env)) return true;
+  }
+
+  return false;
+}
+
 // SERVICE 3: PAYSTACK INITIALIZE PROXY
 app.post(['/paystack-init', '/api/paystack-init', '/api/payments/paystack-init'], async (req: Request, res: Response) => {
   try {
-    const { email, amount, callback_url, metadata, is_live, isLive, mode } = req.body;
+    const { email, amount, callback_url, metadata } = req.body;
     if (!email || !amount) {
       res.status(400).json({ success: false, error: 'Email and amount are required' });
       return;
     }
 
     // Determine mode & select appropriate Paystack secret key
-    let isLiveReq = false;
-    if (is_live !== undefined) {
-      isLiveReq = !!is_live;
-    } else if (isLive !== undefined) {
-      isLiveReq = !!isLive;
-    } else if (mode === 'live') {
-      isLiveReq = true;
-    } else if (metadata && (metadata.is_live === true || metadata.isLive === true || metadata.mode === 'live')) {
-      isLiveReq = true;
-    }
+    const isLiveReq = checkIsLiveRequest(req.body);
 
     const paystackKey = isLiveReq
       ? (secretVault.PAYSTACK_LIVE_SECRET_KEY || secretVault.PAYSTACK_SECRET_KEY)
@@ -533,20 +551,13 @@ app.get(['/diagnostics', '/api/diagnostics'], (req: Request, res: Response) => {
 // SERVICE 3.1: PAYSTACK SUBACCOUNT CREATION
 app.post(['/subaccount', '/api/subaccount', '/api/payments/subaccount'], async (req: Request, res: Response) => {
   try {
-    const { business_name, settlement_bank, account_number, percentage_charge, is_live, isLive, mode } = req.body;
+    const { business_name, settlement_bank, account_number, percentage_charge } = req.body;
     if (!business_name || !settlement_bank || !account_number || percentage_charge === undefined) {
       res.status(400).json({ success: false, error: 'business_name, settlement_bank, account_number, and percentage_charge are required' });
       return;
     }
 
-    let isLiveReq = false;
-    if (is_live !== undefined) {
-      isLiveReq = !!is_live;
-    } else if (isLive !== undefined) {
-      isLiveReq = !!isLive;
-    } else if (mode === 'live') {
-      isLiveReq = true;
-    }
+    const isLiveReq = checkIsLiveRequest(req.body);
 
     let paystackKey = isLiveReq
       ? (secretVault.PAYSTACK_LIVE_SECRET_KEY || secretVault.PAYSTACK_SECRET_KEY)
@@ -620,22 +631,13 @@ app.post(['/subaccount', '/api/subaccount', '/api/payments/subaccount'], async (
 // SERVICE 3.2: PAYSTACK SPLIT PAYMENT INITIALIZE
 app.post(['/split-payment', '/api/split-payment', '/api/payments/split-payment', '/api/payments/paystack-split-init'], async (req: Request, res: Response) => {
   try {
-    const { email, amount, subaccount_code, callback_url, metadata, is_live, isLive, mode } = req.body;
+    const { email, amount, subaccount_code, callback_url, metadata } = req.body;
     if (!email || !amount || !subaccount_code) {
       res.status(400).json({ success: false, error: 'email, amount, and subaccount_code are required' });
       return;
     }
 
-    let isLiveReq = false;
-    if (is_live !== undefined) {
-      isLiveReq = !!is_live;
-    } else if (isLive !== undefined) {
-      isLiveReq = !!isLive;
-    } else if (mode === 'live') {
-      isLiveReq = true;
-    } else if (metadata && (metadata.is_live === true || metadata.isLive === true || metadata.mode === 'live')) {
-      isLiveReq = true;
-    }
+    const isLiveReq = checkIsLiveRequest(req.body);
 
     let paystackKey = isLiveReq
       ? (secretVault.PAYSTACK_LIVE_SECRET_KEY || secretVault.PAYSTACK_SECRET_KEY)
