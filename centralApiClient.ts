@@ -223,6 +223,72 @@ export async function initializePaystackTransaction(
 }
 
 /**
+ * SERVICE 3.1: Create Paystack Subaccount
+ * Safely triggers subaccount creation on the gateway without exposing secret keys.
+ */
+export async function createPaystackSubaccount(
+  businessName: string,
+  settlementBank: string,
+  accountNumber: string,
+  percentageCharge: number,
+  options?: { isLive?: boolean; mode?: string }
+) {
+  const response = await fetch(`${CENTRAL_GATEWAY_URL}/payments/subaccount`, {
+    method: 'POST',
+    headers: getHeaders(),
+    credentials: 'include',
+    body: JSON.stringify({
+      business_name: businessName,
+      settlement_bank: settlementBank,
+      account_number: accountNumber,
+      percentage_charge: percentageCharge,
+      is_live: options?.isLive,
+      mode: options?.mode,
+    }),
+  });
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.detail?.message || data.error || 'Failed to create subaccount');
+  }
+  return data;
+}
+
+/**
+ * SERVICE 3.2: Initialize Split Payment Transaction
+ * Inits a transaction split with the specified subaccount code.
+ */
+export async function initializePaystackSplitTransaction(
+  email: string,
+  amountInKoboOrCents: number,
+  subaccountCode: string,
+  callbackUrl?: string,
+  metadata?: Record<string, any>,
+  options?: { isLive?: boolean; mode?: string }
+) {
+  const response = await fetch(`${CENTRAL_GATEWAY_URL}/payments/split-payment`, {
+    method: 'POST',
+    headers: getHeaders(),
+    credentials: 'include',
+    body: JSON.stringify({
+      email,
+      amount: amountInKoboOrCents,
+      subaccount_code: subaccountCode,
+      callback_url: callbackUrl,
+      metadata,
+      is_live: options?.isLive,
+      mode: options?.mode,
+    }),
+  });
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.detail?.message || data.error || 'Failed to initialize split transaction');
+  }
+  return data;
+}
+
+/**
  * Generic Universal Proxy Caller
  * Forwards any custom upstream request through your FastAPI gateway.
  */

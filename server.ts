@@ -530,6 +530,181 @@ app.get(['/diagnostics', '/api/diagnostics'], (req: Request, res: Response) => {
   });
 });
 
+// SERVICE 3.1: PAYSTACK SUBACCOUNT CREATION
+app.post(['/subaccount', '/api/subaccount', '/api/payments/subaccount'], async (req: Request, res: Response) => {
+  try {
+    const { business_name, settlement_bank, account_number, percentage_charge, is_live, isLive, mode } = req.body;
+    if (!business_name || !settlement_bank || !account_number || percentage_charge === undefined) {
+      res.status(400).json({ success: false, error: 'business_name, settlement_bank, account_number, and percentage_charge are required' });
+      return;
+    }
+
+    let isLiveReq = false;
+    if (is_live !== undefined) {
+      isLiveReq = !!is_live;
+    } else if (isLive !== undefined) {
+      isLiveReq = !!isLive;
+    } else if (mode === 'live') {
+      isLiveReq = true;
+    }
+
+    let paystackKey = isLiveReq
+      ? (secretVault.PAYSTACK_LIVE_SECRET_KEY || secretVault.PAYSTACK_SECRET_KEY)
+      : (secretVault.PAYSTACK_TEST_SECRET_KEY || secretVault.PAYSTACK_SECRET_KEY);
+
+    // If they are trying to initialize a test/sandbox transaction, but only have a live key configured:
+    if (!isLiveReq && !paystackKey && secretVault.PAYSTACK_LIVE_SECRET_KEY) {
+      res.status(400).json({
+        success: false,
+        error: "PAYSTACK_TEST_SECRET_KEY is not defined in your Render environment variables. You have configured PAYSTACK_LIVE_SECRET_KEY, but to use it you must explicitly request a live transaction by passing 'is_live': true in your JSON request body or metadata."
+      });
+      return;
+    }
+
+    if (paystackKey) {
+      paystackKey = paystackKey.trim().replace(/^["']|["']$/g, '');
+    }
+
+    if (paystackKey && paystackKey.startsWith('pk_')) {
+      res.status(400).json({
+        success: false,
+        error: "Invalid key configuration: It looks like you configured a Paystack PUBLIC key (starts with 'pk_') instead of a SECRET key (must start with 'sk_')."
+      });
+      return;
+    }
+
+    if (!paystackKey) {
+      // Mock Sandbox Response
+      res.json({
+        status: true,
+        message: "Subaccount created successfully (MOCK)",
+        data: {
+          subaccount_code: `ACCT_mock_${Math.random().toString(36).substring(2, 8)}`,
+          business_name,
+          settlement_bank,
+          account_number,
+          percentage_charge,
+          is_mock: true,
+          mode: 'test'
+        }
+      });
+      return;
+    }
+
+    const paystackRes = await fetch('https://api.paystack.co/subaccount', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${paystackKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        business_name,
+        settlement_bank,
+        account_number,
+        percentage_charge,
+      }),
+    });
+
+    const data = await paystackRes.json();
+    if (!paystackRes.ok || !data.status) {
+      res.status(paystackRes.status).json({ success: false, error: data.message || 'Paystack Error', details: data });
+      return;
+    }
+
+    res.json(data);
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error?.message || 'Payment proxy error' });
+  }
+});
+
+// SERVICE 3.2: PAYSTACK SPLIT PAYMENT INITIALIZE
+app.post(['/split-payment', '/api/split-payment', '/api/payments/split-payment', '/api/payments/paystack-split-init'], async (req: Request, res: Response) => {
+  try {
+    const { email, amount, subaccount_code, callback_url, metadata, is_live, isLive, mode } = req.body;
+    if (!email || !amount || !subaccount_code) {
+      res.status(400).json({ success: false, error: 'email, amount, and subaccount_code are required' });
+      return;
+    }
+
+    let isLiveReq = false;
+    if (is_live !== undefined) {
+      isLiveReq = !!is_live;
+    } else if (isLive !== undefined) {
+      isLiveReq = !!isLive;
+    } else if (mode === 'live') {
+      isLiveReq = true;
+    } else if (metadata && (metadata.is_live === true || metadata.isLive === true || metadata.mode === 'live')) {
+      isLiveReq = true;
+    }
+
+    let paystackKey = isLiveReq
+      ? (secretVault.PAYSTACK_LIVE_SECRET_KEY || secretVault.PAYSTACK_SECRET_KEY)
+      : (secretVault.PAYSTACK_TEST_SECRET_KEY || secretVault.PAYSTACK_SECRET_KEY);
+
+    // If they are trying to initialize a test/sandbox transaction, but only have a live key configured:
+    if (!isLiveReq && !paystackKey && secretVault.PAYSTACK_LIVE_SECRET_KEY) {
+      res.status(400).json({
+        success: false,
+        error: "PAYSTACK_TEST_SECRET_KEY is not defined in your Render environment variables. You have configured PAYSTACK_LIVE_SECRET_KEY, but to use it you must explicitly request a live transaction by passing 'is_live': true in your JSON request body or metadata."
+      });
+      return;
+    }
+
+    if (paystackKey) {
+      paystackKey = paystackKey.trim().replace(/^["']|["']$/g, '');
+    }
+
+    if (paystackKey && paystackKey.startsWith('pk_')) {
+      res.status(400).json({
+        success: false,
+        error: "Invalid key configuration: It looks like you configured a Paystack PUBLIC key (starts with 'pk_') instead of a SECRET key (must start with 'sk_')."
+      });
+      return;
+    }
+
+    if (!paystackKey) {
+      // Mock Sandbox Response
+      res.json({
+        status: true,
+        message: "Transaction initialized successfully (MOCK SPLIT)",
+        data: {
+          authorization_url: `https://checkout.paystack.com/mock_split_${Math.random().toString(36).substring(2, 10)}`,
+          access_code: `mock_access_${Math.random().toString(36).substring(2, 12)}`,
+          reference: `ref_split_${Math.random().toString(36).substring(2, 12)}`,
+          is_mock: true,
+          mode: 'test'
+        }
+      });
+      return;
+    }
+
+    const paystackRes = await fetch('https://api.paystack.co/transaction/initialize', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${paystackKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        email,
+        amount,
+        callback_url,
+        metadata,
+        subaccount: subaccount_code,
+      }),
+    });
+
+    const data = await paystackRes.json();
+    if (!paystackRes.ok || !data.status) {
+      res.status(paystackRes.status).json({ success: false, error: data.message || 'Paystack Error', details: data });
+      return;
+    }
+
+    res.json(data);
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error?.message || 'Payment proxy error' });
+  }
+});
+
 // SERVICE 4: LIVEKIT ACCESS TOKEN GENERATION
 app.all(['/livekit', '/api/livekit', '/api/livekit/token'], async (req: Request, res: Response) => {
   if (req.method !== 'GET' && req.method !== 'POST') {

@@ -433,6 +433,25 @@ class PaystackInitRequest(BaseModel):
     isLive: Optional[bool] = None
     mode: Optional[str] = None
 
+class PaystackSubaccountRequest(BaseModel):
+    business_name: str
+    settlement_bank: str
+    account_number: str
+    percentage_charge: float
+    is_live: Optional[bool] = None
+    isLive: Optional[bool] = None
+    mode: Optional[str] = None
+
+class PaystackSplitInitRequest(BaseModel):
+    email: str
+    amount: int
+    subaccount_code: str
+    callback_url: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+    is_live: Optional[bool] = None
+    isLive: Optional[bool] = None
+    mode: Optional[str] = None
+
 class LivekitTokenRequest(BaseModel):
     room: str
     identity: str
@@ -675,6 +694,162 @@ async def paystack_init(body: PaystackInitRequest):
             "reference": data.get("data", {}).get("reference"),
             "mode": "live" if is_live_req else "test"
         }
+
+# =========================================================================
+# SERVICE 4.1: PAYSTACK SUBACCOUNT CREATION
+# =========================================================================
+@app.post("/subaccount", dependencies=[Depends(verify_approved_origin)])
+@app.post("/api/subaccount", dependencies=[Depends(verify_approved_origin)])
+@app.post("/api/payments/subaccount", dependencies=[Depends(verify_approved_origin)])
+async def create_paystack_subaccount(body: PaystackSubaccountRequest):
+    # Determine mode & select appropriate Paystack secret key
+    is_live_req = False
+    if body.is_live is not None:
+        is_live_req = body.is_live
+    elif body.isLive is not None:
+        is_live_req = body.isLive
+    elif body.mode == "live":
+        is_live_req = True
+
+    if is_live_req:
+        paystack_key = PAYSTACK_LIVE_SECRET_KEY or PAYSTACK_SECRET_KEY
+    else:
+        paystack_key = PAYSTACK_TEST_SECRET_KEY or PAYSTACK_SECRET_KEY
+
+    if not is_live_req and not paystack_key and PAYSTACK_LIVE_SECRET_KEY:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "status": False,
+                "message": "PAYSTACK_TEST_SECRET_KEY is not defined in your Render environment variables. You have configured PAYSTACK_LIVE_SECRET_KEY, but to use it you must explicitly request a live transaction by passing 'is_live': true in your JSON request body or metadata."
+            }
+        )
+
+    if paystack_key:
+        paystack_key = paystack_key.strip().replace('"', '').replace("'", "")
+
+    if paystack_key and paystack_key.startswith("pk_"):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "status": False,
+                "message": "Invalid key configuration: It looks like you configured a Paystack PUBLIC key (starts with 'pk_') instead of a SECRET key (must start with 'sk_')."
+            }
+        )
+
+    if not paystack_key:
+        return {
+            "status": True,
+            "message": "Subaccount created successfully (MOCK)",
+            "data": {
+                "subaccount_code": f"ACCT_mock_{secrets.token_hex(6)}",
+                "business_name": body.business_name,
+                "settlement_bank": body.settlement_bank,
+                "account_number": body.account_number,
+                "percentage_charge": body.percentage_charge,
+                "is_mock": True,
+                "mode": "test"
+            }
+        }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            "https://api.paystack.co/subaccount",
+            headers={
+                "Authorization": f"Bearer {paystack_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "business_name": body.business_name,
+                "settlement_bank": body.settlement_bank,
+                "account_number": body.account_number,
+                "percentage_charge": body.percentage_charge,
+            },
+        )
+        data = resp.json()
+        if resp.status_code not in (200, 201) or not data.get("status"):
+            raise HTTPException(status_code=resp.status_code, detail=data)
+
+        return data
+
+# =========================================================================
+# SERVICE 4.2: PAYSTACK SPLIT PAYMENT INITIALIZE
+# =========================================================================
+@app.post("/split-payment", dependencies=[Depends(verify_approved_origin)])
+@app.post("/api/split-payment", dependencies=[Depends(verify_approved_origin)])
+@app.post("/api/payments/split-payment", dependencies=[Depends(verify_approved_origin)])
+@app.post("/api/payments/paystack-split-init", dependencies=[Depends(verify_approved_origin)])
+async def init_paystack_split_payment(body: PaystackSplitInitRequest):
+    # Determine mode & select appropriate Paystack secret key
+    is_live_req = False
+    if body.is_live is not None:
+        is_live_req = body.is_live
+    elif body.isLive is not None:
+        is_live_req = body.isLive
+    elif body.mode == "live":
+        is_live_req = True
+    elif body.metadata and (body.metadata.get("is_live") is True or body.metadata.get("isLive") is True or body.metadata.get("mode") == "live"):
+        is_live_req = True
+
+    if is_live_req:
+        paystack_key = PAYSTACK_LIVE_SECRET_KEY or PAYSTACK_SECRET_KEY
+    else:
+        paystack_key = PAYSTACK_TEST_SECRET_KEY or PAYSTACK_SECRET_KEY
+
+    if not is_live_req and not paystack_key and PAYSTACK_LIVE_SECRET_KEY:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "status": False,
+                "message": "PAYSTACK_TEST_SECRET_KEY is not defined in your Render environment variables. You have configured PAYSTACK_LIVE_SECRET_KEY, but to use it you must explicitly request a live transaction by passing 'is_live': true in your JSON request body or metadata."
+            }
+        )
+
+    if paystack_key:
+        paystack_key = paystack_key.strip().replace('"', '').replace("'", "")
+
+    if paystack_key and paystack_key.startswith("pk_"):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "status": False,
+                "message": "Invalid key configuration: It looks like you configured a Paystack PUBLIC key (starts with 'pk_') instead of a SECRET key (must start with 'sk_')."
+            }
+        )
+
+    if not paystack_key:
+        return {
+            "status": True,
+            "message": "Transaction initialized successfully (MOCK SPLIT)",
+            "data": {
+                "authorization_url": f"https://checkout.paystack.com/mock_split_{secrets.token_hex(8)}",
+                "access_code": f"mock_access_{secrets.token_hex(10)}",
+                "reference": f"ref_split_{secrets.token_hex(10)}",
+                "is_mock": True,
+                "mode": "test"
+            }
+        }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            "https://api.paystack.co/transaction/initialize",
+            headers={
+                "Authorization": f"Bearer {paystack_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "email": body.email,
+                "amount": body.amount,
+                "callback_url": body.callback_url,
+                "metadata": body.metadata,
+                "subaccount": body.subaccount_code,
+            },
+        )
+        data = resp.json()
+        if resp.status_code != 200 or not data.get("status"):
+            raise HTTPException(status_code=resp.status_code, detail=data)
+
+        return data
 
 # =========================================================================
 # SERVICE 4.5: SECURE CONFIGURATION DIAGNOSTICS
