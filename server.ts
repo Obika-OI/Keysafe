@@ -52,6 +52,14 @@ const allowedOriginsList = Array.from(new Set([...defaultAllowedOrigins, ...envA
 const secretVault: Record<string, string> = {
   GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',
   STRIPE_SECRET_KEY: process.env.STRIPE_SECRET_KEY || '',
+  STRIPE_TEST_SECRET_KEY: process.env.STRIPE_TEST_SECRET_KEY || '',
+  STRIPE_LIVE_SECRET_KEY: process.env.STRIPE_LIVE_SECRET_KEY || '',
+  STRIPE_RESTRICTED_KEY: process.env.STRIPE_RESTRICTED_KEY || '',
+  STRIPE_TEST_RESTRICTED_KEY: process.env.STRIPE_TEST_RESTRICTED_KEY || '',
+  STRIPE_LIVE_RESTRICTED_KEY: process.env.STRIPE_LIVE_RESTRICTED_KEY || '',
+  STRIPE_PUBLISHABLE_KEY: process.env.STRIPE_PUBLISHABLE_KEY || '',
+  STRIPE_TEST_PUBLISHABLE_KEY: process.env.STRIPE_TEST_PUBLISHABLE_KEY || '',
+  STRIPE_LIVE_PUBLISHABLE_KEY: process.env.STRIPE_LIVE_PUBLISHABLE_KEY || '',
   PAYSTACK_SECRET_KEY: process.env.PAYSTACK_SECRET_KEY || '',
   PAYSTACK_LIVE_SECRET_KEY: process.env.PAYSTACK_LIVE_SECRET_KEY || '',
   PAYSTACK_TEST_SECRET_KEY: process.env.PAYSTACK_TEST_SECRET_KEY || '',
@@ -350,24 +358,120 @@ app.post('/api/ai/stream', async (req: Request, res: Response) => {
   }
 });
 
-// SERVICE 2: STRIPE INTENT PROXY
-app.post('/api/payments/create-stripe-intent', async (req: Request, res: Response) => {
-  let stripeKey = secretVault.STRIPE_SECRET_KEY || process.env.STRIPE_SECRET_KEY;
-  if (stripeKey) {
-    stripeKey = stripeKey.trim().replace(/^["']|["']$/g, '');
+function checkIsLiveRequest(body: any): boolean {
+  if (!body) return false;
+
+  // 1. Direct boolean flags
+  if (body.is_live !== undefined) return !!body.is_live;
+  if (body.isLive !== undefined) return !!body.isLive;
+  if (body.isProduction !== undefined) return !!body.isProduction;
+
+  // 2. String values of mode, environment, env
+  if (['live', 'production', 'prod'].includes(body.mode)) return true;
+  if (['live', 'production', 'prod'].includes(body.environment)) return true;
+  if (['live', 'production', 'prod'].includes(body.env)) return true;
+
+  // 3. Inside metadata dictionary
+  const meta = body.metadata;
+  if (meta && typeof meta === 'object') {
+    if (meta.is_live !== undefined) return !!meta.is_live;
+    if (meta.isLive !== undefined) return !!meta.isLive;
+    if (meta.isProduction !== undefined) return !!meta.isProduction;
+    if (['live', 'production', 'prod'].includes(meta.mode)) return true;
+    if (['live', 'production', 'prod'].includes(meta.environment)) return true;
+    if (['live', 'production', 'prod'].includes(meta.env)) return true;
   }
 
-  // Proactive Validation: Warn if they configured a public key (starts with pk_) instead of a secret key (must start with sk_)
+  return false;
+}
+
+function resolveStripeKey(isLiveReq: boolean, preferRestricted: boolean = false): string {
+  let key = '';
+  if (isLiveReq) {
+    key = preferRestricted
+      ? (secretVault.STRIPE_LIVE_RESTRICTED_KEY || secretVault.STRIPE_RESTRICTED_KEY || secretVault.STRIPE_LIVE_SECRET_KEY || secretVault.STRIPE_SECRET_KEY)
+      : (secretVault.STRIPE_LIVE_SECRET_KEY || secretVault.STRIPE_SECRET_KEY || secretVault.STRIPE_LIVE_RESTRICTED_KEY || secretVault.STRIPE_RESTRICTED_KEY);
+  } else {
+    key = preferRestricted
+      ? (secretVault.STRIPE_TEST_RESTRICTED_KEY || secretVault.STRIPE_RESTRICTED_KEY || secretVault.STRIPE_TEST_SECRET_KEY || secretVault.STRIPE_SECRET_KEY)
+      : (secretVault.STRIPE_TEST_SECRET_KEY || secretVault.STRIPE_SECRET_KEY || secretVault.STRIPE_TEST_RESTRICTED_KEY || secretVault.STRIPE_RESTRICTED_KEY);
+  }
+
+  if (key) {
+    key = key.trim().replace(/^["']|["']$/g, '');
+  }
+
+  return key;
+}
+
+function resolveStripePublishableKey(isLiveReq: boolean): string {
+  let key = isLiveReq
+    ? (secretVault.STRIPE_LIVE_PUBLISHABLE_KEY || secretVault.STRIPE_PUBLISHABLE_KEY)
+    : (secretVault.STRIPE_TEST_PUBLISHABLE_KEY || secretVault.STRIPE_PUBLISHABLE_KEY || secretVault.STRIPE_LIVE_PUBLISHABLE_KEY);
+
+  if (key) {
+    key = key.trim().replace(/^["']|["']$/g, '');
+  }
+
+  return key;
+}
+
+// SERVICE 2.0: STRIPE CONFIG / PUBLISHABLE KEY RETRIEVAL
+app.all(['/api/payments/stripe/config', '/api/stripe/config'], async (req: Request, res: Response) => {
+  let isLiveReq = false;
+  const isProduction = req.query.isProduction !== undefined ? req.query.isProduction === 'true' : req.body?.isProduction;
+  const isLive = req.query.is_live !== undefined ? req.query.is_live === 'true' : (req.query.isLive !== undefined ? req.query.isLive === 'true' : req.body?.is_live || req.body?.isLive);
+  const mode = req.query.mode || req.body?.mode;
+
+  if (isProduction !== undefined) isLiveReq = !!isProduction;
+  else if (isLive !== undefined) isLiveReq = !!isLive;
+  else if (mode === 'live' || mode === 'production' || mode === 'prod') isLiveReq = true;
+
+  const pubKey = resolveStripePublishableKey(isLiveReq);
+  res.json({
+    success: true,
+    publishableKey: pubKey || `pk_mock_${Math.random().toString(36).substring(2, 18)}`,
+    mode: isLiveReq ? 'live' : 'test',
+    isMock: !pubKey,
+  });
+});
+
+// SERVICE 2.1: STRIPE INTENT PROXY & SPLIT PAYMENTS
+app.post(['/api/payments/create-stripe-intent', '/api/payments/stripe/create-intent', '/api/payments/stripe/split-intent', '/api/stripe/split-intent'], async (req: Request, res: Response) => {
+  const isLiveReq = checkIsLiveRequest(req.body);
+  const stripeKey = resolveStripeKey(isLiveReq);
+
+  if (!isLiveReq && !stripeKey && (secretVault.STRIPE_LIVE_SECRET_KEY || secretVault.STRIPE_LIVE_RESTRICTED_KEY)) {
+    res.status(400).json({
+      success: false,
+      error: "STRIPE_TEST_SECRET_KEY is not defined in your Render environment variables. You have configured a live Stripe key, but to use it you must explicitly request a live transaction by passing 'is_live': true or 'isProduction': true in your JSON request body."
+    });
+    return;
+  }
+
   if (stripeKey && stripeKey.startsWith('pk_')) {
     res.status(400).json({
       success: false,
-      error: "Invalid key configuration: It looks like you configured a Stripe PUBLIC key (starts with 'pk_') instead of a SECRET key (must start with 'sk_') in your Render environment variables (e.g. STRIPE_SECRET_KEY)."
+      error: "Invalid key configuration: It looks like you configured a Stripe PUBLIC key (starts with 'pk_') instead of a SECRET (sk_) or RESTRICTED (rk_) key in your Render environment variables."
     });
     return;
   }
 
   try {
-    const { amount, currency = 'usd', payment_method_types = ['card'], metadata } = req.body;
+    const {
+      amount,
+      currency = 'usd',
+      payment_method_types = ['card'],
+      customer,
+      destination_account,
+      destination,
+      application_fee_amount,
+      application_fee,
+      transfer_group,
+      on_behalf_of,
+      metadata
+    } = req.body;
+
     if (!amount) {
       res.status(400).json({ success: false, error: 'Amount is required' });
       return;
@@ -377,8 +481,11 @@ app.post('/api/payments/create-stripe-intent', async (req: Request, res: Respons
       res.json({
         success: true,
         clientSecret: `pi_test_${Math.random().toString(36).substring(2, 16)}_secret_${Math.random().toString(36).substring(2, 16)}`,
+        id: `pi_mock_${Math.random().toString(36).substring(2, 16)}`,
         amount,
         currency,
+        isMock: true,
+        mode: isLiveReq ? 'live' : 'test',
       });
       return;
     }
@@ -387,6 +494,19 @@ app.post('/api/payments/create-stripe-intent', async (req: Request, res: Respons
     params.append('amount', String(amount));
     params.append('currency', currency);
     payment_method_types.forEach((pm: string) => params.append('payment_method_types[]', pm));
+
+    if (customer) params.append('customer', customer);
+
+    const dest = destination_account || destination;
+    if (dest) {
+      params.append('transfer_data[destination]', dest);
+      const fee = application_fee_amount !== undefined ? application_fee_amount : application_fee;
+      if (fee !== undefined) params.append('application_fee_amount', String(fee));
+    }
+
+    if (transfer_group) params.append('transfer_group', transfer_group);
+    if (on_behalf_of) params.append('on_behalf_of', on_behalf_of);
+
     if (metadata) {
       for (const [k, v] of Object.entries(metadata)) {
         params.append(`metadata[${k}]`, String(v));
@@ -415,38 +535,436 @@ app.post('/api/payments/create-stripe-intent', async (req: Request, res: Respons
       amount: data.amount,
       currency: data.currency,
       status: data.status,
+      mode: isLiveReq ? 'live' : 'test',
     });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error?.message || 'Payment proxy error' });
   }
 });
 
-function checkIsLiveRequest(body: any): boolean {
-  if (!body) return false;
+// SERVICE 2.2: STRIPE CUSTOMER CREATION
+app.post(['/api/payments/stripe/create-customer', '/api/payments/stripe/customer', '/api/stripe/customer'], async (req: Request, res: Response) => {
+  const isLiveReq = checkIsLiveRequest(req.body);
+  const stripeKey = resolveStripeKey(isLiveReq);
 
-  // 1. Direct boolean flags
-  if (body.is_live !== undefined) return !!body.is_live;
-  if (body.isLive !== undefined) return !!body.isLive;
-  if (body.isProduction !== undefined) return !!body.isProduction;
-
-  // 2. String values of mode, environment, env
-  if (['live', 'production', 'prod'].includes(body.mode)) return true;
-  if (['live', 'production', 'prod'].includes(body.environment)) return true;
-  if (['live', 'production', 'prod'].includes(body.env)) return true;
-
-  // 3. Inside metadata dictionary
-  const meta = body.metadata;
-  if (meta && typeof meta === 'object') {
-    if (meta.is_live !== undefined) return !!meta.is_live;
-    if (meta.isLive !== undefined) return !!meta.isLive;
-    if (meta.isProduction !== undefined) return !!meta.isProduction;
-    if (['live', 'production', 'prod'].includes(meta.mode)) return true;
-    if (['live', 'production', 'prod'].includes(meta.environment)) return true;
-    if (['live', 'production', 'prod'].includes(meta.env)) return true;
+  if (!stripeKey) {
+    res.json({
+      success: true,
+      id: `cus_mock_${Math.random().toString(36).substring(2, 12)}`,
+      email: req.body?.email,
+      name: req.body?.name,
+      isMock: true,
+      mode: isLiveReq ? 'live' : 'test',
+    });
+    return;
   }
 
-  return false;
-}
+  try {
+    const { email, name, phone, description, payment_method, metadata } = req.body;
+    const params = new URLSearchParams();
+    if (email) params.append('email', email);
+    if (name) params.append('name', name);
+    if (phone) params.append('phone', phone);
+    if (description) params.append('description', description);
+    if (payment_method) params.append('payment_method', payment_method);
+    if (metadata) {
+      for (const [k, v] of Object.entries(metadata)) {
+        params.append(`metadata[${k}]`, String(v));
+      }
+    }
+
+    const stripeRes = await fetch('https://api.stripe.com/v1/customers', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${stripeKey}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: params.toString(),
+    });
+
+    const data = await stripeRes.json();
+    if (!stripeRes.ok) {
+      res.status(stripeRes.status).json({ success: false, error: data?.error?.message || 'Stripe Error', details: data });
+      return;
+    }
+
+    res.json({
+      success: true,
+      id: data.id,
+      email: data.email,
+      name: data.name,
+      customer: data,
+      mode: isLiveReq ? 'live' : 'test',
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error?.message || 'Payment proxy error' });
+  }
+});
+
+// SERVICE 2.3: STRIPE SUBSCRIPTION CREATION
+app.post(['/api/payments/stripe/create-subscription', '/api/payments/stripe/subscription', '/api/stripe/subscription'], async (req: Request, res: Response) => {
+  const isLiveReq = checkIsLiveRequest(req.body);
+  const stripeKey = resolveStripeKey(isLiveReq);
+  const customerId = req.body?.customer_id || req.body?.customer;
+
+  if (!customerId) {
+    res.status(400).json({ success: false, error: 'customer_id is required for subscriptions' });
+    return;
+  }
+
+  if (!stripeKey) {
+    res.json({
+      success: true,
+      subscriptionId: `sub_mock_${Math.random().toString(36).substring(2, 12)}`,
+      clientSecret: `pi_test_${Math.random().toString(36).substring(2, 16)}_secret_${Math.random().toString(36).substring(2, 16)}`,
+      status: 'incomplete',
+      isMock: true,
+      mode: isLiveReq ? 'live' : 'test',
+    });
+    return;
+  }
+
+  try {
+    const { price_id, price, items, payment_behavior = 'default_incomplete', coupon, promotion_code, trial_period_days, metadata } = req.body;
+    const params = new URLSearchParams();
+    params.append('customer', customerId);
+    params.append('payment_behavior', payment_behavior);
+    params.append('payment_settings[save_default_payment_method]', 'on_subscription');
+    params.append('expand[0]', 'latest_invoice.payment_intent');
+
+    const prId = price_id || price;
+    if (prId) {
+      params.append('items[0][price]', prId);
+    } else if (Array.isArray(items)) {
+      items.forEach((item: any, idx: number) => {
+        if (item.price) params.append(`items[${idx}][price]`, String(item.price));
+        if (item.quantity) params.append(`items[${idx}][quantity]`, String(item.quantity));
+      });
+    }
+
+    if (coupon) params.append('coupon', coupon);
+    if (promotion_code) params.append('promotion_code', promotion_code);
+    if (trial_period_days) params.append('trial_period_days', String(trial_period_days));
+
+    if (metadata) {
+      for (const [k, v] of Object.entries(metadata)) {
+        params.append(`metadata[${k}]`, String(v));
+      }
+    }
+
+    const stripeRes = await fetch('https://api.stripe.com/v1/subscriptions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${stripeKey}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: params.toString(),
+    });
+
+    const data = await stripeRes.json();
+    if (!stripeRes.ok) {
+      res.status(stripeRes.status).json({ success: false, error: data?.error?.message || 'Stripe Error', details: data });
+      return;
+    }
+
+    const pi = data?.latest_invoice?.payment_intent;
+    res.json({
+      success: true,
+      subscriptionId: data.id,
+      clientSecret: pi?.client_secret,
+      status: data.status,
+      subscription: data,
+      mode: isLiveReq ? 'live' : 'test',
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error?.message || 'Payment proxy error' });
+  }
+});
+
+// SERVICE 2.4: STRIPE SETUP INTENT
+app.post(['/api/payments/stripe/create-setup-intent', '/api/payments/stripe/setup-intent', '/api/stripe/setup-intent'], async (req: Request, res: Response) => {
+  const isLiveReq = checkIsLiveRequest(req.body);
+  const stripeKey = resolveStripeKey(isLiveReq);
+
+  if (!stripeKey) {
+    res.json({
+      success: true,
+      clientSecret: `seti_mock_${Math.random().toString(36).substring(2, 16)}_secret_${Math.random().toString(36).substring(2, 16)}`,
+      id: `seti_mock_${Math.random().toString(36).substring(2, 16)}`,
+      status: 'requires_payment_method',
+      isMock: true,
+      mode: isLiveReq ? 'live' : 'test',
+    });
+    return;
+  }
+
+  try {
+    const { customer_id, customer, payment_method_types = ['card'], metadata } = req.body;
+    const params = new URLSearchParams();
+    const cust = customer_id || customer;
+    if (cust) params.append('customer', cust);
+    payment_method_types.forEach((pm: string) => params.append('payment_method_types[]', pm));
+
+    if (metadata) {
+      for (const [k, v] of Object.entries(metadata)) {
+        params.append(`metadata[${k}]`, String(v));
+      }
+    }
+
+    const stripeRes = await fetch('https://api.stripe.com/v1/setup_intents', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${stripeKey}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: params.toString(),
+    });
+
+    const data = await stripeRes.json();
+    if (!stripeRes.ok) {
+      res.status(stripeRes.status).json({ success: false, error: data?.error?.message || 'Stripe Error', details: data });
+      return;
+    }
+
+    res.json({
+      success: true,
+      clientSecret: data.client_secret,
+      id: data.id,
+      status: data.status,
+      mode: isLiveReq ? 'live' : 'test',
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error?.message || 'Payment proxy error' });
+  }
+});
+
+// SERVICE 2.5: STRIPE CUSTOMER PORTAL SESSION
+app.post(['/api/payments/stripe/create-portal-session', '/api/payments/stripe/portal-session', '/api/stripe/portal-session'], async (req: Request, res: Response) => {
+  const isLiveReq = checkIsLiveRequest(req.body);
+  const stripeKey = resolveStripeKey(isLiveReq);
+  const cust = req.body?.customer_id || req.body?.customer;
+
+  if (!cust) {
+    res.status(400).json({ success: false, error: 'customer_id is required for customer portal session' });
+    return;
+  }
+
+  if (!stripeKey) {
+    res.json({
+      success: true,
+      url: 'https://billing.stripe.com/p/session/mock_portal_session',
+      isMock: true,
+      mode: isLiveReq ? 'live' : 'test',
+    });
+    return;
+  }
+
+  try {
+    const params = new URLSearchParams();
+    params.append('customer', cust);
+    if (req.body?.return_url) params.append('return_url', req.body.return_url);
+
+    const stripeRes = await fetch('https://api.stripe.com/v1/billing_portal/sessions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${stripeKey}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: params.toString(),
+    });
+
+    const data = await stripeRes.json();
+    if (!stripeRes.ok) {
+      res.status(stripeRes.status).json({ success: false, error: data?.error?.message || 'Stripe Error', details: data });
+      return;
+    }
+
+    res.json({
+      success: true,
+      url: data.url,
+      id: data.id,
+      mode: isLiveReq ? 'live' : 'test',
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error?.message || 'Payment proxy error' });
+  }
+});
+
+// SERVICE 2.6: STRIPE CONNECT (Merchant Accounts & Links)
+app.post(['/api/payments/stripe/connect/create-account', '/api/payments/stripe/connect/account', '/api/stripe/connect/account'], async (req: Request, res: Response) => {
+  const isLiveReq = checkIsLiveRequest(req.body);
+  const stripeKey = resolveStripeKey(isLiveReq);
+
+  if (!stripeKey) {
+    res.json({
+      success: true,
+      accountId: `acct_mock_${Math.random().toString(36).substring(2, 10)}`,
+      type: req.body?.type || 'express',
+      isMock: true,
+      mode: isLiveReq ? 'live' : 'test',
+    });
+    return;
+  }
+
+  try {
+    const { type = 'express', email, country = 'US', business_type = 'individual', metadata } = req.body;
+    const params = new URLSearchParams();
+    params.append('type', type);
+    params.append('country', country);
+    params.append('capabilities[card_payments][requested]', 'true');
+    params.append('capabilities[transfers][requested]', 'true');
+
+    if (email) params.append('email', email);
+    if (business_type) params.append('business_type', business_type);
+    if (metadata) {
+      for (const [k, v] of Object.entries(metadata)) {
+        params.append(`metadata[${k}]`, String(v));
+      }
+    }
+
+    const stripeRes = await fetch('https://api.stripe.com/v1/accounts', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${stripeKey}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: params.toString(),
+    });
+
+    const data = await stripeRes.json();
+    if (!stripeRes.ok) {
+      res.status(stripeRes.status).json({ success: false, error: data?.error?.message || 'Stripe Error', details: data });
+      return;
+    }
+
+    res.json({
+      success: true,
+      accountId: data.id,
+      account: data,
+      mode: isLiveReq ? 'live' : 'test',
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error?.message || 'Payment proxy error' });
+  }
+});
+
+app.post(['/api/payments/stripe/connect/account-link', '/api/stripe/connect/account-link'], async (req: Request, res: Response) => {
+  const isLiveReq = checkIsLiveRequest(req.body);
+  const stripeKey = resolveStripeKey(isLiveReq);
+  const acc = req.body?.account_id || req.body?.account;
+
+  if (!acc) {
+    res.status(400).json({ success: false, error: 'account_id is required' });
+    return;
+  }
+
+  if (!stripeKey) {
+    res.json({
+      success: true,
+      url: 'https://connect.stripe.com/setup/s/mock_onboarding_link',
+      isMock: true,
+      mode: isLiveReq ? 'live' : 'test',
+    });
+    return;
+  }
+
+  try {
+    const { refresh_url, return_url, type = 'account_onboarding' } = req.body;
+    const params = new URLSearchParams();
+    params.append('account', acc);
+    params.append('refresh_url', refresh_url);
+    params.append('return_url', return_url);
+    params.append('type', type);
+
+    const stripeRes = await fetch('https://api.stripe.com/v1/account_links', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${stripeKey}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: params.toString(),
+    });
+
+    const data = await stripeRes.json();
+    if (!stripeRes.ok) {
+      res.status(stripeRes.status).json({ success: false, error: data?.error?.message || 'Stripe Error', details: data });
+      return;
+    }
+
+    res.json({
+      success: true,
+      url: data.url,
+      mode: isLiveReq ? 'live' : 'test',
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error?.message || 'Payment proxy error' });
+  }
+});
+
+// SERVICE 2.7: STRIPE TRANSFERS (Direct Split Payouts)
+app.post(['/api/payments/stripe/create-transfer', '/api/payments/stripe/transfer', '/api/stripe/transfer'], async (req: Request, res: Response) => {
+  const isLiveReq = checkIsLiveRequest(req.body);
+  const stripeKey = resolveStripeKey(isLiveReq);
+  const dest = req.body?.destination || req.body?.destination_account;
+
+  if (!dest) {
+    res.status(400).json({ success: false, error: 'destination is required' });
+    return;
+  }
+
+  if (!stripeKey) {
+    res.json({
+      success: true,
+      transferId: `tr_mock_${Math.random().toString(36).substring(2, 12)}`,
+      amount: req.body?.amount,
+      currency: req.body?.currency,
+      destination: dest,
+      isMock: true,
+      mode: isLiveReq ? 'live' : 'test',
+    });
+    return;
+  }
+
+  try {
+    const { amount, currency = 'usd', transfer_group, description, metadata } = req.body;
+    const params = new URLSearchParams();
+    params.append('amount', String(amount));
+    params.append('currency', currency);
+    params.append('destination', dest);
+
+    if (transfer_group) params.append('transfer_group', transfer_group);
+    if (description) params.append('description', description);
+    if (metadata) {
+      for (const [k, v] of Object.entries(metadata)) {
+        params.append(`metadata[${k}]`, String(v));
+      }
+    }
+
+    const stripeRes = await fetch('https://api.stripe.com/v1/transfers', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${stripeKey}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: params.toString(),
+    });
+
+    const data = await stripeRes.json();
+    if (!stripeRes.ok) {
+      res.status(stripeRes.status).json({ success: false, error: data?.error?.message || 'Stripe Error', details: data });
+      return;
+    }
+
+    res.json({
+      success: true,
+      transferId: data.id,
+      transfer: data,
+      mode: isLiveReq ? 'live' : 'test',
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error?.message || 'Payment proxy error' });
+  }
+});
 
 // SERVICE 3: PAYSTACK INITIALIZE PROXY
 app.post(['/paystack-init', '/api/paystack-init', '/api/payments/paystack-init'], async (req: Request, res: Response) => {
@@ -531,16 +1049,25 @@ app.get(['/diagnostics', '/api/diagnostics'], (req: Request, res: Response) => {
       has_quotes: key.includes('"') || key.includes("'"),
       is_public_key: cleaned.startsWith('pk_'),
       is_secret_key: cleaned.startsWith('sk_'),
+      is_restricted_key: cleaned.startsWith('rk_'),
     };
   };
 
   res.json({
     success: true,
     environment: {
+      STRIPE_SECRET_KEY: analyzeKey(secretVault.STRIPE_SECRET_KEY || process.env.STRIPE_SECRET_KEY),
+      STRIPE_TEST_SECRET_KEY: analyzeKey(secretVault.STRIPE_TEST_SECRET_KEY || process.env.STRIPE_TEST_SECRET_KEY),
+      STRIPE_LIVE_SECRET_KEY: analyzeKey(secretVault.STRIPE_LIVE_SECRET_KEY || process.env.STRIPE_LIVE_SECRET_KEY),
+      STRIPE_RESTRICTED_KEY: analyzeKey(secretVault.STRIPE_RESTRICTED_KEY || process.env.STRIPE_RESTRICTED_KEY),
+      STRIPE_TEST_RESTRICTED_KEY: analyzeKey(secretVault.STRIPE_TEST_RESTRICTED_KEY || process.env.STRIPE_TEST_RESTRICTED_KEY),
+      STRIPE_LIVE_RESTRICTED_KEY: analyzeKey(secretVault.STRIPE_LIVE_RESTRICTED_KEY || process.env.STRIPE_LIVE_RESTRICTED_KEY),
+      STRIPE_PUBLISHABLE_KEY: analyzeKey(secretVault.STRIPE_PUBLISHABLE_KEY || process.env.STRIPE_PUBLISHABLE_KEY),
+      STRIPE_TEST_PUBLISHABLE_KEY: analyzeKey(secretVault.STRIPE_TEST_PUBLISHABLE_KEY || process.env.STRIPE_TEST_PUBLISHABLE_KEY),
+      STRIPE_LIVE_PUBLISHABLE_KEY: analyzeKey(secretVault.STRIPE_LIVE_PUBLISHABLE_KEY || process.env.STRIPE_LIVE_PUBLISHABLE_KEY),
       PAYSTACK_SECRET_KEY: analyzeKey(secretVault.PAYSTACK_SECRET_KEY || process.env.PAYSTACK_SECRET_KEY),
       PAYSTACK_TEST_SECRET_KEY: analyzeKey(secretVault.PAYSTACK_TEST_SECRET_KEY || process.env.PAYSTACK_TEST_SECRET_KEY),
       PAYSTACK_LIVE_SECRET_KEY: analyzeKey(secretVault.PAYSTACK_LIVE_SECRET_KEY || process.env.PAYSTACK_LIVE_SECRET_KEY),
-      STRIPE_SECRET_KEY: analyzeKey(secretVault.STRIPE_SECRET_KEY || process.env.STRIPE_SECRET_KEY),
       GEMINI_API_KEY_defined: !!(secretVault.GEMINI_API_KEY || process.env.GEMINI_API_KEY),
       LIVEKIT_API_KEY_defined: !!(secretVault.LIVEKIT_API_KEY || process.env.LIVEKIT_API_KEY),
       LIVEKIT_API_SECRET_defined: !!(secretVault.LIVEKIT_API_SECRET || process.env.LIVEKIT_API_SECRET),

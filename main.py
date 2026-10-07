@@ -20,6 +20,14 @@ load_dotenv()
 PORT = int(os.getenv("PORT", "3000"))
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
+STRIPE_TEST_SECRET_KEY = os.getenv("STRIPE_TEST_SECRET_KEY", "")
+STRIPE_LIVE_SECRET_KEY = os.getenv("STRIPE_LIVE_SECRET_KEY", "")
+STRIPE_RESTRICTED_KEY = os.getenv("STRIPE_RESTRICTED_KEY", "")
+STRIPE_TEST_RESTRICTED_KEY = os.getenv("STRIPE_TEST_RESTRICTED_KEY", "")
+STRIPE_LIVE_RESTRICTED_KEY = os.getenv("STRIPE_LIVE_RESTRICTED_KEY", "")
+STRIPE_PUBLISHABLE_KEY = os.getenv("STRIPE_PUBLISHABLE_KEY", "")
+STRIPE_TEST_PUBLISHABLE_KEY = os.getenv("STRIPE_TEST_PUBLISHABLE_KEY", "")
+STRIPE_LIVE_PUBLISHABLE_KEY = os.getenv("STRIPE_LIVE_PUBLISHABLE_KEY", "")
 PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY", "")
 PAYSTACK_LIVE_SECRET_KEY = os.getenv("PAYSTACK_LIVE_SECRET_KEY", "")
 PAYSTACK_TEST_SECRET_KEY = os.getenv("PAYSTACK_TEST_SECRET_KEY", "")
@@ -418,11 +426,130 @@ class GeminiRequest(BaseModel):
     config: Optional[Dict[str, Any]] = None
     generationConfig: Optional[Dict[str, Any]] = None
 
+class StripeConfigRequest(BaseModel):
+    is_live: Optional[bool] = None
+    isLive: Optional[bool] = None
+    isProduction: Optional[bool] = None
+    mode: Optional[str] = None
+    environment: Optional[str] = None
+    env: Optional[str] = None
+
 class StripeIntentRequest(BaseModel):
     amount: int
     currency: Optional[str] = "usd"
     payment_method_types: Optional[List[str]] = ["card"]
+    customer: Optional[str] = None
+    destination_account: Optional[str] = None
+    destination: Optional[str] = None
+    application_fee_amount: Optional[int] = None
+    application_fee: Optional[int] = None
+    transfer_group: Optional[str] = None
+    on_behalf_of: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = None
+    is_live: Optional[bool] = None
+    isLive: Optional[bool] = None
+    isProduction: Optional[bool] = None
+    mode: Optional[str] = None
+    environment: Optional[str] = None
+    env: Optional[str] = None
+
+class StripeCustomerRequest(BaseModel):
+    email: Optional[str] = None
+    name: Optional[str] = None
+    payment_method: Optional[str] = None
+    phone: Optional[str] = None
+    description: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+    is_live: Optional[bool] = None
+    isLive: Optional[bool] = None
+    isProduction: Optional[bool] = None
+    mode: Optional[str] = None
+    environment: Optional[str] = None
+    env: Optional[str] = None
+
+class StripeSubscriptionRequest(BaseModel):
+    customer_id: Optional[str] = None
+    customer: Optional[str] = None
+    price_id: Optional[str] = None
+    price: Optional[str] = None
+    items: Optional[List[Dict[str, Any]]] = None
+    payment_behavior: Optional[str] = "default_incomplete"
+    payment_settings: Optional[Dict[str, Any]] = None
+    coupon: Optional[str] = None
+    promotion_code: Optional[str] = None
+    trial_period_days: Optional[int] = None
+    metadata: Optional[Dict[str, Any]] = None
+    is_live: Optional[bool] = None
+    isLive: Optional[bool] = None
+    isProduction: Optional[bool] = None
+    mode: Optional[str] = None
+    environment: Optional[str] = None
+    env: Optional[str] = None
+
+class StripeSetupIntentRequest(BaseModel):
+    customer_id: Optional[str] = None
+    customer: Optional[str] = None
+    payment_method_types: Optional[List[str]] = ["card"]
+    metadata: Optional[Dict[str, Any]] = None
+    is_live: Optional[bool] = None
+    isLive: Optional[bool] = None
+    isProduction: Optional[bool] = None
+    mode: Optional[str] = None
+    environment: Optional[str] = None
+    env: Optional[str] = None
+
+class StripePortalSessionRequest(BaseModel):
+    customer_id: Optional[str] = None
+    customer: Optional[str] = None
+    return_url: Optional[str] = None
+    is_live: Optional[bool] = None
+    isLive: Optional[bool] = None
+    isProduction: Optional[bool] = None
+    mode: Optional[str] = None
+    environment: Optional[str] = None
+    env: Optional[str] = None
+
+class StripeConnectAccountRequest(BaseModel):
+    type: Optional[str] = "express"
+    email: Optional[str] = None
+    country: Optional[str] = "US"
+    business_type: Optional[str] = "individual"
+    capabilities: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = None
+    is_live: Optional[bool] = None
+    isLive: Optional[bool] = None
+    isProduction: Optional[bool] = None
+    mode: Optional[str] = None
+    environment: Optional[str] = None
+    env: Optional[str] = None
+
+class StripeConnectAccountLinkRequest(BaseModel):
+    account_id: Optional[str] = None
+    account: Optional[str] = None
+    refresh_url: str
+    return_url: str
+    type: Optional[str] = "account_onboarding"
+    is_live: Optional[bool] = None
+    isLive: Optional[bool] = None
+    isProduction: Optional[bool] = None
+    mode: Optional[str] = None
+    environment: Optional[str] = None
+    env: Optional[str] = None
+
+class StripeTransferRequest(BaseModel):
+    amount: int
+    currency: Optional[str] = "usd"
+    destination: str
+    destination_account: Optional[str] = None
+    transfer_group: Optional[str] = None
+    description: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+    is_live: Optional[bool] = None
+    isLive: Optional[bool] = None
+    isProduction: Optional[bool] = None
+    mode: Optional[str] = None
+    environment: Optional[str] = None
+    env: Optional[str] = None
 
 class PaystackInitRequest(BaseModel):
     email: str
@@ -562,66 +689,6 @@ async def stream_gemini_content(body: GeminiRequest):
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
-# =========================================================================
-# SERVICE 3: STRIPE PAYMENT INTENT
-# =========================================================================
-@app.post("/api/payments/create-stripe-intent", dependencies=[Depends(verify_approved_origin)])
-async def create_stripe_intent(body: StripeIntentRequest):
-    stripe_key = STRIPE_SECRET_KEY
-    if stripe_key:
-        stripe_key = stripe_key.strip().replace('"', '').replace("'", "")
-
-    # Proactive Validation: Warn if they configured a public key (starts with pk_) instead of a secret key (must start with sk_)
-    if stripe_key and stripe_key.startswith("pk_"):
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "status": False,
-                "message": "Invalid key configuration: It looks like you configured a Stripe PUBLIC key (starts with 'pk_') instead of a SECRET key (must start with 'sk_') in your Render environment variables (e.g. STRIPE_SECRET_KEY)."
-            }
-        )
-
-    if not stripe_key:
-        return {
-            "success": True,
-            "clientSecret": f"pi_mock_{secrets.token_hex(12)}_secret_{secrets.token_hex(12)}",
-            "amount": body.amount,
-            "currency": body.currency,
-        }
-
-    form_data = {
-        "amount": str(body.amount),
-        "currency": body.currency or "usd",
-    }
-    for idx, pm in enumerate(body.payment_method_types or ["card"]):
-        form_data[f"payment_method_types[{idx}]"] = pm
-
-    if body.metadata:
-        for k, v in body.metadata.items():
-            form_data[f"metadata[{k}]"] = str(v)
-
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        resp = await client.post(
-            "https://api.stripe.com/v1/payment_intents",
-            headers={
-                "Authorization": f"Bearer {stripe_key}",
-                "Content-Type": "application/x-www-form-urlencoded",
-            },
-            data=form_data,
-        )
-        data = resp.json()
-        if resp.status_code != 200:
-            raise HTTPException(status_code=resp.status_code, detail=data)
-
-        return {
-            "success": True,
-            "clientSecret": data.get("client_secret"),
-            "id": data.get("id"),
-            "amount": data.get("amount"),
-            "currency": data.get("currency"),
-            "status": data.get("status"),
-        }
-
 def check_is_live_request(body) -> bool:
     # 1. Direct flags on root level
     if getattr(body, "is_live", None) is not None:
@@ -661,6 +728,555 @@ def check_is_live_request(body) -> bool:
             return True
 
     return False
+
+def resolve_stripe_key(is_live_req: bool, prefer_restricted: bool = False) -> str:
+    if is_live_req:
+        key = (
+            (STRIPE_LIVE_RESTRICTED_KEY or STRIPE_RESTRICTED_KEY or STRIPE_LIVE_SECRET_KEY or STRIPE_SECRET_KEY)
+            if prefer_restricted
+            else (STRIPE_LIVE_SECRET_KEY or STRIPE_SECRET_KEY or STRIPE_LIVE_RESTRICTED_KEY or STRIPE_RESTRICTED_KEY)
+        )
+    else:
+        key = (
+            (STRIPE_TEST_RESTRICTED_KEY or STRIPE_RESTRICTED_KEY or STRIPE_TEST_SECRET_KEY or STRIPE_SECRET_KEY)
+            if prefer_restricted
+            else (STRIPE_TEST_SECRET_KEY or STRIPE_SECRET_KEY or STRIPE_TEST_RESTRICTED_KEY or STRIPE_RESTRICTED_KEY)
+        )
+
+    # If they are requesting test mode but only live key is defined
+    if not is_live_req and not key and (STRIPE_LIVE_SECRET_KEY or STRIPE_LIVE_RESTRICTED_KEY):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "status": False,
+                "message": "STRIPE_TEST_SECRET_KEY is not defined in your Render environment variables. You have configured a live Stripe key, but to use it you must explicitly request a live transaction by passing 'is_live': true or 'isProduction': true in your JSON request body."
+            }
+        )
+
+    if key:
+        key = key.strip().replace('"', '').replace("'", "")
+
+    if key and key.startswith("pk_"):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "status": False,
+                "message": "Invalid key configuration: It looks like you configured a Stripe PUBLIC key (starts with 'pk_') instead of a SECRET (sk_) or RESTRICTED (rk_) key in your Render environment variables."
+            }
+        )
+
+    return key
+
+def resolve_stripe_publishable_key(is_live_req: bool) -> str:
+    if is_live_req:
+        key = STRIPE_LIVE_PUBLISHABLE_KEY or STRIPE_PUBLISHABLE_KEY
+    else:
+        key = STRIPE_TEST_PUBLISHABLE_KEY or STRIPE_PUBLISHABLE_KEY or STRIPE_LIVE_PUBLISHABLE_KEY
+
+    if key:
+        key = key.strip().replace('"', '').replace("'", "")
+
+    return key
+
+# =========================================================================
+# SERVICE 3.0: STRIPE CONFIG / PUBLISHABLE KEY RETRIEVAL
+# =========================================================================
+@app.get("/api/payments/stripe/config", dependencies=[Depends(verify_approved_origin)])
+@app.get("/api/stripe/config", dependencies=[Depends(verify_approved_origin)])
+async def get_stripe_config_get(
+    mode: Optional[str] = Query(None),
+    isProduction: Optional[bool] = Query(None),
+    is_live: Optional[bool] = Query(None)
+):
+    is_live_req = False
+    if isProduction is not None:
+        is_live_req = isProduction
+    elif is_live is not None:
+        is_live_req = is_live
+    elif mode in ("live", "production", "prod"):
+        is_live_req = True
+
+    pub_key = resolve_stripe_publishable_key(is_live_req)
+    return {
+        "success": True,
+        "publishableKey": pub_key or f"pk_mock_{secrets.token_hex(16)}",
+        "mode": "live" if is_live_req else "test",
+        "isMock": not bool(pub_key)
+    }
+
+@app.post("/api/payments/stripe/config", dependencies=[Depends(verify_approved_origin)])
+@app.post("/api/stripe/config", dependencies=[Depends(verify_approved_origin)])
+async def get_stripe_config_post(body: StripeConfigRequest):
+    is_live_req = check_is_live_request(body)
+    pub_key = resolve_stripe_publishable_key(is_live_req)
+    return {
+        "success": True,
+        "publishableKey": pub_key or f"pk_mock_{secrets.token_hex(16)}",
+        "mode": "live" if is_live_req else "test",
+        "isMock": not bool(pub_key)
+    }
+
+# =========================================================================
+# SERVICE 3.1: STRIPE PAYMENT INTENT & SPLIT PAYMENTS
+# =========================================================================
+@app.post("/api/payments/create-stripe-intent", dependencies=[Depends(verify_approved_origin)])
+@app.post("/api/payments/stripe/create-intent", dependencies=[Depends(verify_approved_origin)])
+@app.post("/api/payments/stripe/split-intent", dependencies=[Depends(verify_approved_origin)])
+@app.post("/api/stripe/split-intent", dependencies=[Depends(verify_approved_origin)])
+async def create_stripe_intent(body: StripeIntentRequest):
+    is_live_req = check_is_live_request(body)
+    stripe_key = resolve_stripe_key(is_live_req)
+
+    if not stripe_key:
+        return {
+            "success": True,
+            "clientSecret": f"pi_mock_{secrets.token_hex(12)}_secret_{secrets.token_hex(12)}",
+            "id": f"pi_mock_{secrets.token_hex(12)}",
+            "amount": body.amount,
+            "currency": body.currency,
+            "isMock": True,
+            "mode": "live" if is_live_req else "test"
+        }
+
+    form_data = {
+        "amount": str(body.amount),
+        "currency": body.currency or "usd",
+    }
+    for idx, pm in enumerate(body.payment_method_types or ["card"]):
+        form_data[f"payment_method_types[{idx}]"] = pm
+
+    if body.customer:
+        form_data["customer"] = body.customer
+
+    # Split payments / Destination charges support
+    dest_acc = body.destination_account or body.destination
+    if dest_acc:
+        form_data["transfer_data[destination]"] = dest_acc
+        fee = body.application_fee_amount or body.application_fee
+        if fee is not None:
+            form_data["application_fee_amount"] = str(fee)
+
+    if body.transfer_group:
+        form_data["transfer_group"] = body.transfer_group
+
+    if body.on_behalf_of:
+        form_data["on_behalf_of"] = body.on_behalf_of
+
+    if body.metadata:
+        for k, v in body.metadata.items():
+            form_data[f"metadata[{k}]"] = str(v)
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            "https://api.stripe.com/v1/payment_intents",
+            headers={
+                "Authorization": f"Bearer {stripe_key}",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            data=form_data,
+        )
+        data = resp.json()
+        if resp.status_code != 200:
+            raise HTTPException(status_code=resp.status_code, detail=data)
+
+        return {
+            "success": True,
+            "clientSecret": data.get("client_secret"),
+            "id": data.get("id"),
+            "amount": data.get("amount"),
+            "currency": data.get("currency"),
+            "status": data.get("status"),
+            "mode": "live" if is_live_req else "test"
+        }
+
+# =========================================================================
+# SERVICE 3.2: STRIPE CUSTOMER CREATION
+# =========================================================================
+@app.post("/api/payments/stripe/create-customer", dependencies=[Depends(verify_approved_origin)])
+@app.post("/api/payments/stripe/customer", dependencies=[Depends(verify_approved_origin)])
+@app.post("/api/stripe/customer", dependencies=[Depends(verify_approved_origin)])
+async def create_stripe_customer(body: StripeCustomerRequest):
+    is_live_req = check_is_live_request(body)
+    stripe_key = resolve_stripe_key(is_live_req)
+
+    if not stripe_key:
+        return {
+            "success": True,
+            "id": f"cus_mock_{secrets.token_hex(10)}",
+            "email": body.email,
+            "name": body.name,
+            "isMock": True,
+            "mode": "live" if is_live_req else "test"
+        }
+
+    form_data = {}
+    if body.email:
+        form_data["email"] = body.email
+    if body.name:
+        form_data["name"] = body.name
+    if body.phone:
+        form_data["phone"] = body.phone
+    if body.description:
+        form_data["description"] = body.description
+    if body.payment_method:
+        form_data["payment_method"] = body.payment_method
+    if body.metadata:
+        for k, v in body.metadata.items():
+            form_data[f"metadata[{k}]"] = str(v)
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            "https://api.stripe.com/v1/customers",
+            headers={
+                "Authorization": f"Bearer {stripe_key}",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            data=form_data,
+        )
+        data = resp.json()
+        if resp.status_code != 200:
+            raise HTTPException(status_code=resp.status_code, detail=data)
+
+        return {
+            "success": True,
+            "id": data.get("id"),
+            "email": data.get("email"),
+            "name": data.get("name"),
+            "customer": data,
+            "mode": "live" if is_live_req else "test"
+        }
+
+# =========================================================================
+# SERVICE 3.3: STRIPE SUBSCRIPTION CREATION
+# =========================================================================
+@app.post("/api/payments/stripe/create-subscription", dependencies=[Depends(verify_approved_origin)])
+@app.post("/api/payments/stripe/subscription", dependencies=[Depends(verify_approved_origin)])
+@app.post("/api/stripe/subscription", dependencies=[Depends(verify_approved_origin)])
+async def create_stripe_subscription(body: StripeSubscriptionRequest):
+    is_live_req = check_is_live_request(body)
+    stripe_key = resolve_stripe_key(is_live_req)
+
+    customer_id = body.customer_id or body.customer
+    if not customer_id:
+        raise HTTPException(status_code=400, detail="customer_id is required for subscriptions.")
+
+    if not stripe_key:
+        return {
+            "success": True,
+            "subscriptionId": f"sub_mock_{secrets.token_hex(10)}",
+            "clientSecret": f"pi_mock_{secrets.token_hex(12)}_secret_{secrets.token_hex(12)}",
+            "status": "incomplete",
+            "isMock": True,
+            "mode": "live" if is_live_req else "test"
+        }
+
+    form_data = {
+        "customer": customer_id,
+        "payment_behavior": body.payment_behavior or "default_incomplete",
+        "payment_settings[save_default_payment_method]": "on_subscription",
+        "expand[0]": "latest_invoice.payment_intent"
+    }
+
+    price_id = body.price_id or body.price
+    if price_id:
+        form_data["items[0][price]"] = price_id
+    elif body.items:
+        for idx, item in enumerate(body.items):
+            if "price" in item:
+                form_data[f"items[{idx}][price]"] = str(item["price"])
+            if "quantity" in item:
+                form_data[f"items[{idx}][quantity]"] = str(item["quantity"])
+
+    if body.coupon:
+        form_data["coupon"] = body.coupon
+    if body.promotion_code:
+        form_data["promotion_code"] = body.promotion_code
+    if body.trial_period_days:
+        form_data["trial_period_days"] = str(body.trial_period_days)
+
+    if body.metadata:
+        for k, v in body.metadata.items():
+            form_data[f"metadata[{k}]"] = str(v)
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            "https://api.stripe.com/v1/subscriptions",
+            headers={
+                "Authorization": f"Bearer {stripe_key}",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            data=form_data,
+        )
+        data = resp.json()
+        if resp.status_code != 200:
+            raise HTTPException(status_code=resp.status_code, detail=data)
+
+        latest_inv = data.get("latest_invoice") or {}
+        pi = latest_inv.get("payment_intent") if isinstance(latest_inv, dict) else None
+        client_secret = pi.get("client_secret") if isinstance(pi, dict) else None
+
+        return {
+            "success": True,
+            "subscriptionId": data.get("id"),
+            "clientSecret": client_secret,
+            "status": data.get("status"),
+            "subscription": data,
+            "mode": "live" if is_live_req else "test"
+        }
+
+# =========================================================================
+# SERVICE 3.4: STRIPE SETUP INTENT (For Card Registration & Future Billing)
+# =========================================================================
+@app.post("/api/payments/stripe/create-setup-intent", dependencies=[Depends(verify_approved_origin)])
+@app.post("/api/payments/stripe/setup-intent", dependencies=[Depends(verify_approved_origin)])
+@app.post("/api/stripe/setup-intent", dependencies=[Depends(verify_approved_origin)])
+async def create_stripe_setup_intent(body: StripeSetupIntentRequest):
+    is_live_req = check_is_live_request(body)
+    stripe_key = resolve_stripe_key(is_live_req)
+
+    if not stripe_key:
+        return {
+            "success": True,
+            "clientSecret": f"seti_mock_{secrets.token_hex(12)}_secret_{secrets.token_hex(12)}",
+            "id": f"seti_mock_{secrets.token_hex(12)}",
+            "status": "requires_payment_method",
+            "isMock": True,
+            "mode": "live" if is_live_req else "test"
+        }
+
+    form_data = {}
+    cust = body.customer_id or body.customer
+    if cust:
+        form_data["customer"] = cust
+
+    for idx, pm in enumerate(body.payment_method_types or ["card"]):
+        form_data[f"payment_method_types[{idx}]"] = pm
+
+    if body.metadata:
+        for k, v in body.metadata.items():
+            form_data[f"metadata[{k}]"] = str(v)
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            "https://api.stripe.com/v1/setup_intents",
+            headers={
+                "Authorization": f"Bearer {stripe_key}",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            data=form_data,
+        )
+        data = resp.json()
+        if resp.status_code != 200:
+            raise HTTPException(status_code=resp.status_code, detail=data)
+
+        return {
+            "success": True,
+            "clientSecret": data.get("client_secret"),
+            "id": data.get("id"),
+            "status": data.get("status"),
+            "mode": "live" if is_live_req else "test"
+        }
+
+# =========================================================================
+# SERVICE 3.5: STRIPE CUSTOMER BILLING PORTAL SESSION
+# =========================================================================
+@app.post("/api/payments/stripe/create-portal-session", dependencies=[Depends(verify_approved_origin)])
+@app.post("/api/payments/stripe/portal-session", dependencies=[Depends(verify_approved_origin)])
+@app.post("/api/stripe/portal-session", dependencies=[Depends(verify_approved_origin)])
+async def create_stripe_portal_session(body: StripePortalSessionRequest):
+    is_live_req = check_is_live_request(body)
+    stripe_key = resolve_stripe_key(is_live_req)
+
+    cust = body.customer_id or body.customer
+    if not cust:
+        raise HTTPException(status_code=400, detail="customer_id is required for customer portal session.")
+
+    if not stripe_key:
+        return {
+            "success": True,
+            "url": "https://billing.stripe.com/p/session/mock_portal_session",
+            "isMock": True,
+            "mode": "live" if is_live_req else "test"
+        }
+
+    form_data = {"customer": cust}
+    if body.return_url:
+        form_data["return_url"] = body.return_url
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            "https://api.stripe.com/v1/billing_portal/sessions",
+            headers={
+                "Authorization": f"Bearer {stripe_key}",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            data=form_data,
+        )
+        data = resp.json()
+        if resp.status_code != 200:
+            raise HTTPException(status_code=resp.status_code, detail=data)
+
+        return {
+            "success": True,
+            "url": data.get("url"),
+            "id": data.get("id"),
+            "mode": "live" if is_live_req else "test"
+        }
+
+# =========================================================================
+# SERVICE 3.6: STRIPE CONNECT (Merchant Subaccounts & Account Links)
+# =========================================================================
+@app.post("/api/payments/stripe/connect/create-account", dependencies=[Depends(verify_approved_origin)])
+@app.post("/api/payments/stripe/connect/account", dependencies=[Depends(verify_approved_origin)])
+@app.post("/api/stripe/connect/account", dependencies=[Depends(verify_approved_origin)])
+async def create_stripe_connect_account(body: StripeConnectAccountRequest):
+    is_live_req = check_is_live_request(body)
+    stripe_key = resolve_stripe_key(is_live_req)
+
+    if not stripe_key:
+        return {
+            "success": True,
+            "accountId": f"acct_mock_{secrets.token_hex(8)}",
+            "type": body.type or "express",
+            "isMock": True,
+            "mode": "live" if is_live_req else "test"
+        }
+
+    form_data = {
+        "type": body.type or "express",
+        "country": body.country or "US",
+        "capabilities[card_payments][requested]": "true",
+        "capabilities[transfers][requested]": "true",
+    }
+    if body.email:
+        form_data["email"] = body.email
+    if body.business_type:
+        form_data["business_type"] = body.business_type
+    if body.metadata:
+        for k, v in body.metadata.items():
+            form_data[f"metadata[{k}]"] = str(v)
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            "https://api.stripe.com/v1/accounts",
+            headers={
+                "Authorization": f"Bearer {stripe_key}",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            data=form_data,
+        )
+        data = resp.json()
+        if resp.status_code != 200:
+            raise HTTPException(status_code=resp.status_code, detail=data)
+
+        return {
+            "success": True,
+            "accountId": data.get("id"),
+            "account": data,
+            "mode": "live" if is_live_req else "test"
+        }
+
+@app.post("/api/payments/stripe/connect/account-link", dependencies=[Depends(verify_approved_origin)])
+@app.post("/api/stripe/connect/account-link", dependencies=[Depends(verify_approved_origin)])
+async def create_stripe_connect_account_link(body: StripeConnectAccountLinkRequest):
+    is_live_req = check_is_live_request(body)
+    stripe_key = resolve_stripe_key(is_live_req)
+
+    acc = body.account_id or body.account
+    if not acc:
+        raise HTTPException(status_code=400, detail="account_id is required.")
+
+    if not stripe_key:
+        return {
+            "success": True,
+            "url": "https://connect.stripe.com/setup/s/mock_onboarding_link",
+            "isMock": True,
+            "mode": "live" if is_live_req else "test"
+        }
+
+    form_data = {
+        "account": acc,
+        "refresh_url": body.refresh_url,
+        "return_url": body.return_url,
+        "type": body.type or "account_onboarding"
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            "https://api.stripe.com/v1/account_links",
+            headers={
+                "Authorization": f"Bearer {stripe_key}",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            data=form_data,
+        )
+        data = resp.json()
+        if resp.status_code != 200:
+            raise HTTPException(status_code=resp.status_code, detail=data)
+
+        return {
+            "success": True,
+            "url": data.get("url"),
+            "mode": "live" if is_live_req else "test"
+        }
+
+# =========================================================================
+# SERVICE 3.7: STRIPE TRANSFERS (Direct Split Payouts)
+# =========================================================================
+@app.post("/api/payments/stripe/create-transfer", dependencies=[Depends(verify_approved_origin)])
+@app.post("/api/payments/stripe/transfer", dependencies=[Depends(verify_approved_origin)])
+@app.post("/api/stripe/transfer", dependencies=[Depends(verify_approved_origin)])
+async def create_stripe_transfer(body: StripeTransferRequest):
+    is_live_req = check_is_live_request(body)
+    stripe_key = resolve_stripe_key(is_live_req)
+
+    dest = body.destination or body.destination_account
+    if not dest:
+        raise HTTPException(status_code=400, detail="destination (Connected account id) is required.")
+
+    if not stripe_key:
+        return {
+            "success": True,
+            "transferId": f"tr_mock_{secrets.token_hex(10)}",
+            "amount": body.amount,
+            "currency": body.currency,
+            "destination": dest,
+            "isMock": True,
+            "mode": "live" if is_live_req else "test"
+        }
+
+    form_data = {
+        "amount": str(body.amount),
+        "currency": body.currency or "usd",
+        "destination": dest,
+    }
+    if body.transfer_group:
+        form_data["transfer_group"] = body.transfer_group
+    if body.description:
+        form_data["description"] = body.description
+    if body.metadata:
+        for k, v in body.metadata.items():
+            form_data[f"metadata[{k}]"] = str(v)
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            "https://api.stripe.com/v1/transfers",
+            headers={
+                "Authorization": f"Bearer {stripe_key}",
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            data=form_data,
+        )
+        data = resp.json()
+        if resp.status_code != 200:
+            raise HTTPException(status_code=resp.status_code, detail=data)
+
+        return {
+            "success": True,
+            "transferId": data.get("id"),
+            "transfer": data,
+            "mode": "live" if is_live_req else "test"
+        }
 
 # =========================================================================
 # SERVICE 4: PAYSTACK INITIALIZE
@@ -896,15 +1512,24 @@ async def secure_diagnostics():
             "has_quotes": '"' in key or "'" in key,
             "is_public_key": cleaned.startswith("pk_"),
             "is_secret_key": cleaned.startswith("sk_"),
+            "is_restricted_key": cleaned.startswith("rk_"),
         }
 
     return {
         "success": True,
         "environment": {
+            "STRIPE_SECRET_KEY": analyze_key(STRIPE_SECRET_KEY),
+            "STRIPE_TEST_SECRET_KEY": analyze_key(STRIPE_TEST_SECRET_KEY),
+            "STRIPE_LIVE_SECRET_KEY": analyze_key(STRIPE_LIVE_SECRET_KEY),
+            "STRIPE_RESTRICTED_KEY": analyze_key(STRIPE_RESTRICTED_KEY),
+            "STRIPE_TEST_RESTRICTED_KEY": analyze_key(STRIPE_TEST_RESTRICTED_KEY),
+            "STRIPE_LIVE_RESTRICTED_KEY": analyze_key(STRIPE_LIVE_RESTRICTED_KEY),
+            "STRIPE_PUBLISHABLE_KEY": analyze_key(STRIPE_PUBLISHABLE_KEY),
+            "STRIPE_TEST_PUBLISHABLE_KEY": analyze_key(STRIPE_TEST_PUBLISHABLE_KEY),
+            "STRIPE_LIVE_PUBLISHABLE_KEY": analyze_key(STRIPE_LIVE_PUBLISHABLE_KEY),
             "PAYSTACK_SECRET_KEY": analyze_key(PAYSTACK_SECRET_KEY),
             "PAYSTACK_TEST_SECRET_KEY": analyze_key(PAYSTACK_TEST_SECRET_KEY),
             "PAYSTACK_LIVE_SECRET_KEY": analyze_key(PAYSTACK_LIVE_SECRET_KEY),
-            "STRIPE_SECRET_KEY": analyze_key(STRIPE_SECRET_KEY),
             "GEMINI_API_KEY_defined": bool(GEMINI_API_KEY),
             "LIVEKIT_API_KEY_defined": bool(LIVEKIT_API_KEY),
             "LIVEKIT_API_SECRET_defined": bool(LIVEKIT_API_SECRET),

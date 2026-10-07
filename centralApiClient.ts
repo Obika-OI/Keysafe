@@ -167,13 +167,50 @@ export async function streamCentralGemini(
 }
 
 /**
- * SERVICE 2: Stripe Payment Intent Proxy
- * Injects STRIPE_SECRET_KEY server-side on Render.
+ * SERVICE 2: Stripe Payment & Billing Helpers
+ * Safely fetches Publishable keys and initiates Subscriptions, Split Payments, and Customer Portals
+ * without ever exposing Stripe Secret or Restricted Keys to frontend clients.
+ */
+
+export interface StripeGatewayOptions {
+  isProduction?: boolean;
+  isLive?: boolean;
+  mode?: string;
+}
+
+/**
+ * Fetch the active Stripe Publishable Key (pk_test_... or pk_live_...) dynamically for Stripe Elements
+ */
+export async function getStripePublishableKey(options?: StripeGatewayOptions): Promise<{ publishableKey: string; mode: string; isMock: boolean }> {
+  const query = options?.isProduction !== undefined ? `?isProduction=${options.isProduction}` : (options?.mode ? `?mode=${options.mode}` : '');
+  const response = await fetch(`${CENTRAL_GATEWAY_URL}/payments/stripe/config${query}`, {
+    method: 'GET',
+    headers: getHeaders(),
+    credentials: 'include',
+  });
+
+  const data = await response.json();
+  if (!response.ok || !data.success) {
+    throw new Error(data.detail || data.error || 'Failed to fetch Stripe config');
+  }
+  return data;
+}
+
+/**
+ * SERVICE 2.1: Stripe Payment Intent Proxy (Supports direct charges and split payments)
  */
 export async function createStripePaymentIntent(
   amountInCents: number,
   currency: string = 'usd',
-  metadata?: Record<string, string>
+  metadata?: Record<string, any>,
+  options?: StripeGatewayOptions & {
+    customer?: string;
+    destinationAccount?: string;
+    applicationFeeAmount?: number;
+    transferGroup?: string;
+    onBehalfOf?: string;
+    paymentMethodTypes?: string[];
+  }
 ) {
   const response = await fetch(`${CENTRAL_GATEWAY_URL}/payments/create-stripe-intent`, {
     method: 'POST',
@@ -183,12 +220,268 @@ export async function createStripePaymentIntent(
       amount: amountInCents,
       currency,
       metadata,
+      customer: options?.customer,
+      destination_account: options?.destinationAccount,
+      application_fee_amount: options?.applicationFeeAmount,
+      transfer_group: options?.transferGroup,
+      on_behalf_of: options?.onBehalfOf,
+      payment_method_types: options?.paymentMethodTypes || ['card'],
+      is_live: options?.isLive,
+      isProduction: options?.isProduction,
+      mode: options?.mode,
     }),
   });
 
   const data = await response.json();
   if (!response.ok || !data.success) {
     throw new Error(data.detail || data.error || 'Failed to create Stripe payment intent');
+  }
+  return data;
+}
+
+/**
+ * SERVICE 2.2: Stripe Customer Creation
+ */
+export async function createStripeCustomer(
+  email?: string,
+  name?: string,
+  paymentMethod?: string,
+  options?: StripeGatewayOptions & {
+    phone?: string;
+    description?: string;
+    metadata?: Record<string, any>;
+  }
+) {
+  const response = await fetch(`${CENTRAL_GATEWAY_URL}/payments/stripe/create-customer`, {
+    method: 'POST',
+    headers: getHeaders(),
+    credentials: 'include',
+    body: JSON.stringify({
+      email,
+      name,
+      payment_method: paymentMethod,
+      phone: options?.phone,
+      description: options?.description,
+      metadata: options?.metadata,
+      is_live: options?.isLive,
+      isProduction: options?.isProduction,
+      mode: options?.mode,
+    }),
+  });
+
+  const data = await response.json();
+  if (!response.ok || !data.success) {
+    throw new Error(data.detail || data.error || 'Failed to create Stripe customer');
+  }
+  return data;
+}
+
+/**
+ * SERVICE 2.3: Stripe Recurring Subscription Creation
+ */
+export async function createStripeSubscription(
+  customerId: string,
+  priceIdOrItems: string | Array<{ price: string; quantity?: number }>,
+  options?: StripeGatewayOptions & {
+    paymentBehavior?: string;
+    coupon?: string;
+    promotionCode?: string;
+    trialPeriodDays?: number;
+    metadata?: Record<string, any>;
+  }
+) {
+  const bodyPayload: Record<string, any> = {
+    customer_id: customerId,
+    payment_behavior: options?.paymentBehavior || 'default_incomplete',
+    coupon: options?.coupon,
+    promotion_code: options?.promotionCode,
+    trial_period_days: options?.trialPeriodDays,
+    metadata: options?.metadata,
+    is_live: options?.isLive,
+    isProduction: options?.isProduction,
+    mode: options?.mode,
+  };
+
+  if (typeof priceIdOrItems === 'string') {
+    bodyPayload.price_id = priceIdOrItems;
+  } else {
+    bodyPayload.items = priceIdOrItems;
+  }
+
+  const response = await fetch(`${CENTRAL_GATEWAY_URL}/payments/stripe/create-subscription`, {
+    method: 'POST',
+    headers: getHeaders(),
+    credentials: 'include',
+    body: JSON.stringify(bodyPayload),
+  });
+
+  const data = await response.json();
+  if (!response.ok || !data.success) {
+    throw new Error(data.detail || data.error || 'Failed to create Stripe subscription');
+  }
+  return data;
+}
+
+/**
+ * SERVICE 2.4: Stripe SetupIntent (Card Registration)
+ */
+export async function createStripeSetupIntent(
+  customerId?: string,
+  options?: StripeGatewayOptions & {
+    paymentMethodTypes?: string[];
+    metadata?: Record<string, any>;
+  }
+) {
+  const response = await fetch(`${CENTRAL_GATEWAY_URL}/payments/stripe/create-setup-intent`, {
+    method: 'POST',
+    headers: getHeaders(),
+    credentials: 'include',
+    body: JSON.stringify({
+      customer_id: customerId,
+      payment_method_types: options?.paymentMethodTypes || ['card'],
+      metadata: options?.metadata,
+      is_live: options?.isLive,
+      isProduction: options?.isProduction,
+      mode: options?.mode,
+    }),
+  });
+
+  const data = await response.json();
+  if (!response.ok || !data.success) {
+    throw new Error(data.detail || data.error || 'Failed to create SetupIntent');
+  }
+  return data;
+}
+
+/**
+ * SERVICE 2.5: Stripe Customer Billing Portal Session
+ */
+export async function createStripePortalSession(
+  customerId: string,
+  returnUrl?: string,
+  options?: StripeGatewayOptions
+) {
+  const response = await fetch(`${CENTRAL_GATEWAY_URL}/payments/stripe/create-portal-session`, {
+    method: 'POST',
+    headers: getHeaders(),
+    credentials: 'include',
+    body: JSON.stringify({
+      customer_id: customerId,
+      return_url: returnUrl,
+      is_live: options?.isLive,
+      isProduction: options?.isProduction,
+      mode: options?.mode,
+    }),
+  });
+
+  const data = await response.json();
+  if (!response.ok || !data.success) {
+    throw new Error(data.detail || data.error || 'Failed to create Billing Portal session');
+  }
+  return data;
+}
+
+/**
+ * SERVICE 2.6: Stripe Connect Merchant Account Creation
+ */
+export async function createStripeConnectAccount(
+  type: 'express' | 'standard' | 'custom' = 'express',
+  options?: StripeGatewayOptions & {
+    email?: string;
+    country?: string;
+    businessType?: string;
+    metadata?: Record<string, any>;
+  }
+) {
+  const response = await fetch(`${CENTRAL_GATEWAY_URL}/payments/stripe/connect/create-account`, {
+    method: 'POST',
+    headers: getHeaders(),
+    credentials: 'include',
+    body: JSON.stringify({
+      type,
+      email: options?.email,
+      country: options?.country || 'US',
+      business_type: options?.businessType || 'individual',
+      metadata: options?.metadata,
+      is_live: options?.isLive,
+      isProduction: options?.isProduction,
+      mode: options?.mode,
+    }),
+  });
+
+  const data = await response.json();
+  if (!response.ok || !data.success) {
+    throw new Error(data.detail || data.error || 'Failed to create Stripe Connect account');
+  }
+  return data;
+}
+
+/**
+ * SERVICE 2.7: Stripe Connect Onboarding Account Link
+ */
+export async function createStripeConnectAccountLink(
+  accountId: string,
+  refreshUrl: string,
+  returnUrl: string,
+  options?: StripeGatewayOptions & {
+    type?: string;
+  }
+) {
+  const response = await fetch(`${CENTRAL_GATEWAY_URL}/payments/stripe/connect/account-link`, {
+    method: 'POST',
+    headers: getHeaders(),
+    credentials: 'include',
+    body: JSON.stringify({
+      account_id: accountId,
+      refresh_url: refreshUrl,
+      return_url: returnUrl,
+      type: options?.type || 'account_onboarding',
+      is_live: options?.isLive,
+      isProduction: options?.isProduction,
+      mode: options?.mode,
+    }),
+  });
+
+  const data = await response.json();
+  if (!response.ok || !data.success) {
+    throw new Error(data.detail || data.error || 'Failed to create Stripe Connect account link');
+  }
+  return data;
+}
+
+/**
+ * SERVICE 2.8: Stripe Direct Transfer (Split Payout)
+ */
+export async function createStripeTransfer(
+  amountInCents: number,
+  destinationAccountId: string,
+  currency: string = 'usd',
+  options?: StripeGatewayOptions & {
+    transferGroup?: string;
+    description?: string;
+    metadata?: Record<string, any>;
+  }
+) {
+  const response = await fetch(`${CENTRAL_GATEWAY_URL}/payments/stripe/create-transfer`, {
+    method: 'POST',
+    headers: getHeaders(),
+    credentials: 'include',
+    body: JSON.stringify({
+      amount: amountInCents,
+      destination: destinationAccountId,
+      currency,
+      transfer_group: options?.transferGroup,
+      description: options?.description,
+      metadata: options?.metadata,
+      is_live: options?.isLive,
+      isProduction: options?.isProduction,
+      mode: options?.mode,
+    }),
+  });
+
+  const data = await response.json();
+  if (!response.ok || !data.success) {
+    throw new Error(data.detail || data.error || 'Failed to create Stripe transfer');
   }
   return data;
 }
