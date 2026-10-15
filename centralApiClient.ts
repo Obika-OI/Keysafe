@@ -13,9 +13,9 @@
  * 4. End users can NEVER inspect or steal your API keys!
  */
 
-const CENTRAL_GATEWAY_URL = (typeof process !== 'undefined' && process.env?.VITE_CENTRAL_GATEWAY_URL) 
-  || (typeof window !== 'undefined' && (window as any).__CENTRAL_GATEWAY_URL__)
-  || (typeof window !== 'undefined' ? `${window.location.origin}/api` : 'http://localhost:3000/api');
+const CENTRAL_GATEWAY_URL = (typeof process !== 'undefined' && (process.env?.VITE_CENTRAL_GATEWAY_URL || process.env?.CENTRAL_GATEWAY_URL)) 
+  || (typeof window !== 'undefined' && ((window as any).__CENTRAL_GATEWAY_URL__ || (window as any).CENTRAL_GATEWAY_URL))
+  || 'https://keysafe-ntia.onrender.com/api';
 
 // Auto-detect if running inside a native mobile app/environment (e.g., React Native, Expo, Capacitor)
 const isNativeMobile = typeof navigator !== 'undefined' && navigator.product === 'ReactNative';
