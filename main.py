@@ -151,7 +151,7 @@ async def health_check():
     return {"status": "ok", "timestamp": int(time.time() * 1000)}
 
 def is_domain_matching(origin_or_url: str, allowed_list: List[str]) -> bool:
-    """Helper to check if origin or referer matches approved whitelist permanently."""
+    """Helper to check if origin or referer matches approved whitelist permanently (including subdomains)."""
     if not origin_or_url:
         return False
 
@@ -163,14 +163,17 @@ def is_domain_matching(origin_or_url: str, allowed_list: List[str]) -> bool:
         # Local network IPs for Expo / Metro bundler (192.168.x.x or 10.0.x.x)
         if re.match(r"^http://(192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+)(:\d+)?", origin_or_url):
             return True
-        # Parse scheme + netloc
+        # Parse scheme + netloc with subdomain support
         try:
             parsed_origin = urlparse(origin_or_url)
             parsed_allowed = urlparse(allowed)
             if parsed_origin.scheme in ["exp", "capacitor", "ionic", "file", "app"]:
                 return True
-            if parsed_origin.netloc and parsed_origin.netloc == parsed_allowed.netloc:
-                return True
+            if parsed_origin.netloc and parsed_allowed.netloc:
+                orig_host = parsed_origin.netloc.lower().split(":")[0]
+                allow_host = parsed_allowed.netloc.lower().split(":")[0]
+                if orig_host == allow_host or orig_host.endswith("." + allow_host):
+                    return True
         except Exception:
             pass
     return False

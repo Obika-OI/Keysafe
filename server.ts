@@ -84,7 +84,9 @@ function isOriginAllowed(originOrUrl?: string): boolean {
       const parsedA = new URL(originOrUrl);
       if (['exp:', 'capacitor:', 'ionic:', 'file:', 'app:'].includes(parsedA.protocol)) return true;
       const parsedB = new URL(allowed);
-      return parsedA.host === parsedB.host;
+      const hostA = parsedA.host.toLowerCase().split(':')[0];
+      const hostB = parsedB.host.toLowerCase().split(':')[0];
+      return hostA === hostB || hostA.endsWith('.' + hostB);
     } catch {
       return false;
     }
