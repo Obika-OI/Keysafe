@@ -524,7 +524,15 @@ export async function createPaystackSubaccount(
   settlementBank: string,
   accountNumber: string,
   percentageCharge: number,
-  options?: { isLive?: boolean; mode?: string }
+  options?: {
+    isLive?: boolean;
+    isProduction?: boolean;
+    mode?: string;
+    description?: string;
+    primaryContactEmail?: string;
+    primaryContactName?: string;
+    primaryContactPhone?: string;
+  }
 ) {
   const response = await fetch(`${CENTRAL_GATEWAY_URL}/payments/subaccount`, {
     method: 'POST',
@@ -532,17 +540,26 @@ export async function createPaystackSubaccount(
     credentials: 'include',
     body: JSON.stringify({
       business_name: businessName,
+      businessName,
       settlement_bank: settlementBank,
+      settlementBank,
       account_number: accountNumber,
+      accountNumber,
       percentage_charge: percentageCharge,
+      percentageCharge,
+      description: options?.description,
+      primary_contact_email: options?.primaryContactEmail,
+      primary_contact_name: options?.primaryContactName,
+      primary_contact_phone: options?.primaryContactPhone,
       is_live: options?.isLive,
+      isProduction: options?.isProduction,
       mode: options?.mode,
     }),
   });
 
   const data = await response.json();
-  if (!response.ok) {
-    throw new Error(data.detail?.message || data.error || 'Failed to create subaccount');
+  if (!response.ok || (data.status !== undefined && !data.status)) {
+    throw new Error(data.detail?.message || data.detail || data.error || data.message || 'Failed to create subaccount');
   }
   return data;
 }
@@ -557,7 +574,7 @@ export async function initializePaystackSplitTransaction(
   subaccountCode: string,
   callbackUrl?: string,
   metadata?: Record<string, any>,
-  options?: { isLive?: boolean; mode?: string }
+  options?: { isLive?: boolean; isProduction?: boolean; mode?: string }
 ) {
   const response = await fetch(`${CENTRAL_GATEWAY_URL}/payments/split-payment`, {
     method: 'POST',
@@ -567,16 +584,99 @@ export async function initializePaystackSplitTransaction(
       email,
       amount: amountInKoboOrCents,
       subaccount_code: subaccountCode,
+      subaccount: subaccountCode,
       callback_url: callbackUrl,
       metadata,
       is_live: options?.isLive,
+      isProduction: options?.isProduction,
       mode: options?.mode,
     }),
   });
 
   const data = await response.json();
-  if (!response.ok) {
-    throw new Error(data.detail?.message || data.error || 'Failed to initialize split transaction');
+  if (!response.ok || (data.status !== undefined && !data.status)) {
+    throw new Error(data.detail?.message || data.detail || data.error || data.message || 'Failed to initialize split transaction');
+  }
+  return data;
+}
+
+/**
+ * SERVICE 3.3: Fetch Paystack Public Configuration
+ */
+export async function getPaystackConfig(options?: { isProduction?: boolean; mode?: string }) {
+  const query = options?.isProduction !== undefined ? `?isProduction=${options.isProduction}` : (options?.mode ? `?mode=${options.mode}` : '');
+  const response = await fetch(`${CENTRAL_GATEWAY_URL}/payments/paystack/config${query}`, {
+    method: 'GET',
+    headers: getHeaders(),
+    credentials: 'include',
+  });
+
+  const data = await response.json();
+  if (!response.ok || !data.success) {
+    throw new Error(data.detail || data.error || 'Failed to fetch Paystack config');
+  }
+  return data;
+}
+
+/**
+ * SERVICE 4: LiveKit Live Class Session Token
+ * Safely fetches a cryptographically signed LiveKit Room Join token
+ * without exposing your LIVEKIT_API_SECRET to the client browser!
+ */
+export async function getLiveKitToken(
+  room: string,
+  identity: string,
+  options?: { name?: string; metadata?: any }
+): Promise<{ success: boolean; token: string; room: string; identity: string; livekitUrl: string; isMock?: boolean }> {
+  const response = await fetch(`${CENTRAL_GATEWAY_URL}/livekit/token`, {
+    method: 'POST',
+    headers: getHeaders(),
+    credentials: 'include',
+    body: JSON.stringify({
+      room,
+      identity,
+      name: options?.name || identity,
+      metadata: options?.metadata,
+    }),
+  });
+
+  const data = await response.json();
+  if (!response.ok || !data.success) {
+    throw new Error(data.detail || data.error || 'Failed to generate LiveKit room token');
+  }
+  return data;
+}
+
+/**
+ * SERVICE 4.1: LiveKit Server URL & Config Discovery
+ */
+export async function getLiveKitConfig(): Promise<{ success: boolean; livekitUrl: string; apiKey: string; isConfigured: boolean }> {
+  const response = await fetch(`${CENTRAL_GATEWAY_URL}/livekit/config`, {
+    method: 'GET',
+    headers: getHeaders(),
+    credentials: 'include',
+  });
+
+  const data = await response.json();
+  if (!response.ok || !data.success) {
+    throw new Error(data.detail || data.error || 'Failed to fetch LiveKit config');
+  }
+  return data;
+}
+
+/**
+ * SERVICE 5: Discovery of Active Vault Services
+ */
+export async function getGatewayPublicConfig() {
+  const response = await fetch(`${CENTRAL_GATEWAY_URL}/config`, {
+    method: 'GET',
+    headers: getHeaders(),
+    credentials: 'include',
+  });
+
+  const data = await response.json();
+  if (!response.ok || !data.success) {
+    throw new Error(data.detail || data.error || 'Failed to fetch gateway config');
   }
   return data;
 }

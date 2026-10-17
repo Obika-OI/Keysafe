@@ -77,24 +77,16 @@ app = FastAPI(
     openapi_url=None     # Disable OpenAPI schema leak
 )
 
-# Permanent CORS Configuration with 24-hour preflight cache & mobile headers support
+# Permanent CORS Configuration with 24-hour preflight cache & wildcard preview support
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"] if "*" in allowed_origins else allowed_origins,
+    allow_origin_regex=r"^https?://([a-zA-Z0-9-]+\.)*(backpack-edu\.com|web\.app|firebaseapp\.com|run\.app)(:\d+)?$|^http://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_origins=allowed_origins if "*" not in allowed_origins else ["*"],
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=[
-        "*",
-        "X-App-Platform",
-        "X-App-Package",
-        "X-Client-Type",
-        "X-Requested-With",
-        "X-Attestation-Token",
-        "X-Attestation-Platform",
-        "User-Agent",
-    ],
+    allow_headers=["*"],
     max_age=86400,       # Cache CORS preflight for 24 hours
-    expose_headers=["X-RateLimit-Limit", "X-RateLimit-Remaining", "X-Proxy-Duration-Ms"]
+    expose_headers=["*"]
 )
 
 # HTML False Warning Page Template
@@ -151,9 +143,28 @@ async def health_check():
     return {"status": "ok", "timestamp": int(time.time() * 1000)}
 
 def is_domain_matching(origin_or_url: str, allowed_list: List[str]) -> bool:
-    """Helper to check if origin or referer matches approved whitelist permanently (including subdomains)."""
+    """Helper to check if origin or referer matches approved whitelist permanently (including subdomains, cloud preview apps, and web apps)."""
     if not origin_or_url:
         return False
+
+    # Check for approved top-level domain suffixes (e.g. *.backpack-edu.com, *.web.app, *.firebaseapp.com, *.run.app)
+    try:
+        parsed = urlparse(origin_or_url)
+        host = (parsed.netloc or "").lower().split(":")[0]
+        if host:
+            if (
+                host == "backpack-edu.com"
+                or host.endswith(".backpack-edu.com")
+                or host == "backpack-9e1e0.web.app"
+                or host.endswith(".web.app")
+                or host.endswith(".firebaseapp.com")
+                or host.endswith(".run.app")
+                or host == "localhost"
+                or host == "127.0.0.1"
+            ):
+                return True
+    except Exception:
+        pass
 
     for allowed in allowed_list:
         if allowed == "*":
@@ -599,6 +610,7 @@ class LivekitTokenRequest(BaseModel):
 # SERVICE 1: GEMINI AI PROXY
 # =========================================================================
 @app.post("/api/ai/generate", dependencies=[Depends(verify_approved_origin)])
+@app.post("/ai/generate", dependencies=[Depends(verify_approved_origin)])
 async def generate_gemini_content(body: GeminiRequest):
     api_key = GEMINI_API_KEY
     if not api_key:
@@ -662,6 +674,7 @@ async def generate_gemini_content(body: GeminiRequest):
 # SERVICE 2: GEMINI STREAMING (Server-Sent Events)
 # =========================================================================
 @app.post("/api/ai/stream", dependencies=[Depends(verify_approved_origin)])
+@app.post("/ai/stream", dependencies=[Depends(verify_approved_origin)])
 async def stream_gemini_content(body: GeminiRequest):
     api_key = GEMINI_API_KEY
     if not api_key:
@@ -1356,11 +1369,132 @@ async def paystack_init(body: PaystackInitRequest):
         }
 
 # =========================================================================
+# SERVICE 4.0: PAYSTACK BANKS LIST
+# =========================================================================
+@app.get("/banks", dependencies=[Depends(verify_approved_origin)])
+@app.get("/bank", dependencies=[Depends(verify_approved_origin)])
+@app.get("/api/banks", dependencies=[Depends(verify_approved_origin)])
+@app.get("/api/bank", dependencies=[Depends(verify_approved_origin)])
+@app.get("/api/paystack/banks", dependencies=[Depends(verify_approved_origin)])
+@app.get("/api/paystack/bank", dependencies=[Depends(verify_approved_origin)])
+async def get_paystack_banks(
+    country: str = Query("nigeria"),
+    use_cursor: bool = Query(False),
+    perPage: int = Query(100),
+    mode: Optional[str] = Query(None),
+    isProduction: Optional[bool] = Query(None),
+    is_live: Optional[bool] = Query(None)
+):
+    is_live_req = False
+    if isProduction is not None:
+        is_live_req = isProduction
+    elif is_live is not None:
+        is_live_req = is_live
+    elif mode in ("live", "production", "prod"):
+        is_live_req = True
+
+    paystack_key = (PAYSTACK_LIVE_SECRET_KEY or PAYSTACK_SECRET_KEY) if is_live_req else (PAYSTACK_TEST_SECRET_KEY or PAYSTACK_SECRET_KEY)
+    if paystack_key:
+        paystack_key = paystack_key.strip().replace('"', '').replace("'", "")
+
+    if not paystack_key:
+        # High-fidelity offline / mock fallback bank list
+        mock_banks = [
+            {"id": 1, "name": "Access Bank", "code": "044", "slug": "access-bank"},
+            {"id": 2, "name": "First Bank of Nigeria", "code": "011", "slug": "first-bank-of-nigeria"},
+            {"id": 3, "name": "Guaranty Trust Bank (GTBank)", "code": "058", "slug": "guaranty-trust-bank"},
+            {"id": 4, "name": "Zenith Bank", "code": "057", "slug": "zenith-bank"},
+            {"id": 5, "name": "United Bank For Africa (UBA)", "code": "033", "slug": "united-bank-for-africa"},
+            {"id": 6, "name": "Kuda Bank", "code": "50211", "slug": "kuda-bank"},
+            {"id": 7, "name": "OPay Digital Services", "code": "999992", "slug": "opay"},
+            {"id": 8, "name": "Moniepoint Microfinance Bank", "code": "50515", "slug": "moniepoint-mfb"},
+            {"id": 9, "name": "Fidelity Bank", "code": "070", "slug": "fidelity-bank"},
+            {"id": 10, "name": "Stanbic IBTC Bank", "code": "221", "slug": "stanbic-ibtc-bank"},
+        ]
+        return {"status": True, "message": "Banks retrieved (Mock)", "data": mock_banks, "is_mock": True}
+
+    async with httpx.AsyncClient(timeout=25.0) as client:
+        try:
+            resp = await client.get(
+                "https://api.paystack.co/bank",
+                params={"country": country, "use_cursor": use_cursor, "perPage": perPage},
+                headers={"Authorization": f"Bearer {paystack_key}"}
+            )
+            return resp.json()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Failed to fetch bank list from Paystack: {str(e)}")
+
+# =========================================================================
+# SERVICE 4.01: PAYSTACK RESOLVE ACCOUNT NUMBER (NUBAN)
+# =========================================================================
+@app.get("/resolve-account", dependencies=[Depends(verify_approved_origin)])
+@app.get("/api/resolve-account", dependencies=[Depends(verify_approved_origin)])
+@app.get("/api/paystack/resolve-account", dependencies=[Depends(verify_approved_origin)])
+@app.get("/bank/resolve", dependencies=[Depends(verify_approved_origin)])
+@app.get("/api/bank/resolve", dependencies=[Depends(verify_approved_origin)])
+@app.get("/api/paystack/bank/resolve", dependencies=[Depends(verify_approved_origin)])
+async def resolve_paystack_account(
+    account_number: Optional[str] = Query(None),
+    bank_code: Optional[str] = Query(None),
+    settlement_bank: Optional[str] = Query(None),
+    mode: Optional[str] = Query(None),
+    isProduction: Optional[bool] = Query(None),
+    is_live: Optional[bool] = Query(None)
+):
+    acc = account_number
+    bank = bank_code or settlement_bank
+
+    if not acc or not bank:
+        raise HTTPException(status_code=400, detail="Both 'account_number' (10 digits) and 'bank_code' are required.")
+
+    is_live_req = False
+    if isProduction is not None:
+        is_live_req = isProduction
+    elif is_live is not None:
+        is_live_req = is_live
+    elif mode in ("live", "production", "prod"):
+        is_live_req = True
+
+    paystack_key = (PAYSTACK_LIVE_SECRET_KEY or PAYSTACK_SECRET_KEY) if is_live_req else (PAYSTACK_TEST_SECRET_KEY or PAYSTACK_SECRET_KEY)
+    if paystack_key:
+        paystack_key = paystack_key.strip().replace('"', '').replace("'", "")
+
+    if not paystack_key:
+        return {
+            "status": True,
+            "message": "Account resolved (Mock)",
+            "data": {
+                "account_number": acc,
+                "account_name": "BACKPACK VERIFIED INSTRUCTOR",
+                "bank_id": 9
+            },
+            "is_mock": True
+        }
+
+    async with httpx.AsyncClient(timeout=25.0) as client:
+        try:
+            resp = await client.get(
+                "https://api.paystack.co/bank/resolve",
+                params={"account_number": acc, "bank_code": bank},
+                headers={"Authorization": f"Bearer {paystack_key}"}
+            )
+            data = resp.json()
+            if resp.status_code != 200:
+                raise HTTPException(status_code=resp.status_code, detail=data)
+            return data
+        except Exception as e:
+            if isinstance(e, HTTPException):
+                raise e
+            raise HTTPException(status_code=502, detail=f"Failed to resolve bank account on Paystack: {str(e)}")
+
+# =========================================================================
 # SERVICE 4.1: PAYSTACK SUBACCOUNT CREATION
 # =========================================================================
 @app.post("/subaccount", dependencies=[Depends(verify_approved_origin)])
 @app.post("/api/subaccount", dependencies=[Depends(verify_approved_origin)])
 @app.post("/api/payments/subaccount", dependencies=[Depends(verify_approved_origin)])
+@app.post("/api/paystack/subaccount", dependencies=[Depends(verify_approved_origin)])
+@app.post("/paystack/subaccount", dependencies=[Depends(verify_approved_origin)])
 async def create_paystack_subaccount(body: PaystackSubaccountRequest):
     # Determine mode & select appropriate Paystack secret key
     is_live_req = check_is_live_request(body)
@@ -1427,12 +1561,66 @@ async def create_paystack_subaccount(body: PaystackSubaccountRequest):
         return data
 
 # =========================================================================
+# SERVICE 4.11: PAYSTACK SUBACCOUNT RETRIEVAL & UPDATE
+# =========================================================================
+@app.get("/subaccount/{code}", dependencies=[Depends(verify_approved_origin)])
+@app.get("/api/subaccount/{code}", dependencies=[Depends(verify_approved_origin)])
+@app.get("/api/paystack/subaccount/{code}", dependencies=[Depends(verify_approved_origin)])
+async def get_paystack_subaccount_details(
+    code: str,
+    mode: Optional[str] = Query(None),
+    isProduction: Optional[bool] = Query(None),
+    is_live: Optional[bool] = Query(None)
+):
+    is_live_req = False
+    if isProduction is not None:
+        is_live_req = isProduction
+    elif is_live is not None:
+        is_live_req = is_live
+    elif mode in ("live", "production", "prod"):
+        is_live_req = True
+
+    paystack_key = (PAYSTACK_LIVE_SECRET_KEY or PAYSTACK_SECRET_KEY) if is_live_req else (PAYSTACK_TEST_SECRET_KEY or PAYSTACK_SECRET_KEY)
+    if paystack_key:
+        paystack_key = paystack_key.strip().replace('"', '').replace("'", "")
+
+    if not paystack_key:
+        return {
+            "status": True,
+            "message": "Subaccount retrieved (Mock)",
+            "data": {
+                "subaccount_code": code,
+                "business_name": "Verified Instructor Account",
+                "is_mock": True
+            }
+        }
+
+    async with httpx.AsyncClient(timeout=25.0) as client:
+        try:
+            resp = await client.get(
+                f"https://api.paystack.co/subaccount/{code}",
+                headers={"Authorization": f"Bearer {paystack_key}"}
+            )
+            return resp.json()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Paystack subaccount fetch error: {str(e)}")
+
+# =========================================================================
 # SERVICE 4.2: PAYSTACK SPLIT PAYMENT INITIALIZE
 # =========================================================================
 @app.post("/split-payment", dependencies=[Depends(verify_approved_origin)])
 @app.post("/api/split-payment", dependencies=[Depends(verify_approved_origin)])
 @app.post("/api/payments/split-payment", dependencies=[Depends(verify_approved_origin)])
 @app.post("/api/payments/paystack-split-init", dependencies=[Depends(verify_approved_origin)])
+@app.post("/api/paystack/split-payment", dependencies=[Depends(verify_approved_origin)])
+@app.post("/paystack/split-payment", dependencies=[Depends(verify_approved_origin)])
+@app.post("/transaction/initialize", dependencies=[Depends(verify_approved_origin)])
+@app.post("/api/transaction/initialize", dependencies=[Depends(verify_approved_origin)])
+@app.post("/api/paystack/transaction/initialize", dependencies=[Depends(verify_approved_origin)])
+@app.post("/paystack/transaction/initialize", dependencies=[Depends(verify_approved_origin)])
+@app.post("/api/paystack-init", dependencies=[Depends(verify_approved_origin)])
+@app.post("/api/payments/paystack-init", dependencies=[Depends(verify_approved_origin)])
+@app.post("/paystack-init", dependencies=[Depends(verify_approved_origin)])
 async def init_paystack_split_payment(body: PaystackSplitInitRequest):
     # Determine mode & select appropriate Paystack secret key
     is_live_req = check_is_live_request(body)
@@ -1477,25 +1665,77 @@ async def init_paystack_split_payment(body: PaystackSplitInitRequest):
         }
 
     async with httpx.AsyncClient(timeout=30.0) as client:
+        req_payload: Dict[str, Any] = {
+            "email": body.email,
+            "amount": body.amount,
+            "callback_url": body.callback_url,
+            "metadata": body.metadata,
+        }
+        if body.subaccount_code:
+            req_payload["subaccount"] = body.subaccount_code
+
         resp = await client.post(
             "https://api.paystack.co/transaction/initialize",
             headers={
                 "Authorization": f"Bearer {paystack_key}",
                 "Content-Type": "application/json",
             },
-            json={
-                "email": body.email,
-                "amount": body.amount,
-                "callback_url": body.callback_url,
-                "metadata": body.metadata,
-                "subaccount": body.subaccount_code,
-            },
+            json=req_payload,
         )
         data = resp.json()
         if resp.status_code != 200 or not data.get("status"):
             raise HTTPException(status_code=resp.status_code, detail=data)
 
         return data
+
+# =========================================================================
+# SERVICE 4.3: PAYSTACK TRANSACTION VERIFICATION
+# =========================================================================
+@app.get("/transaction/verify/{reference}", dependencies=[Depends(verify_approved_origin)])
+@app.get("/api/transaction/verify/{reference}", dependencies=[Depends(verify_approved_origin)])
+@app.get("/api/paystack/transaction/verify/{reference}", dependencies=[Depends(verify_approved_origin)])
+@app.get("/paystack/verify/{reference}", dependencies=[Depends(verify_approved_origin)])
+@app.get("/api/paystack/verify/{reference}", dependencies=[Depends(verify_approved_origin)])
+async def verify_paystack_transaction(
+    reference: str,
+    mode: Optional[str] = Query(None),
+    isProduction: Optional[bool] = Query(None),
+    is_live: Optional[bool] = Query(None)
+):
+    is_live_req = False
+    if isProduction is not None:
+        is_live_req = isProduction
+    elif is_live is not None:
+        is_live_req = is_live
+    elif mode in ("live", "production", "prod"):
+        is_live_req = True
+
+    paystack_key = (PAYSTACK_LIVE_SECRET_KEY or PAYSTACK_SECRET_KEY) if is_live_req else (PAYSTACK_TEST_SECRET_KEY or PAYSTACK_SECRET_KEY)
+    if paystack_key:
+        paystack_key = paystack_key.strip().replace('"', '').replace("'", "")
+
+    if not paystack_key:
+        return {
+            "status": True,
+            "message": "Verification successful (Mock)",
+            "data": {
+                "reference": reference,
+                "status": "success",
+                "amount": 10000,
+                "currency": "NGN",
+                "is_mock": True
+            }
+        }
+
+    async with httpx.AsyncClient(timeout=25.0) as client:
+        try:
+            resp = await client.get(
+                f"https://api.paystack.co/transaction/verify/{reference}",
+                headers={"Authorization": f"Bearer {paystack_key}"}
+            )
+            return resp.json()
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Paystack verification error: {str(e)}")
 
 # =========================================================================
 # SERVICE 4.5: SECURE CONFIGURATION DIAGNOSTICS
@@ -1544,6 +1784,7 @@ async def secure_diagnostics():
 # =========================================================================
 @app.api_route("/livekit", methods=["GET", "POST"], dependencies=[Depends(verify_approved_origin)])
 @app.api_route("/api/livekit", methods=["GET", "POST"], dependencies=[Depends(verify_approved_origin)])
+@app.api_route("/livekit/token", methods=["GET", "POST"], dependencies=[Depends(verify_approved_origin)])
 @app.api_route("/api/livekit/token", methods=["GET", "POST"], dependencies=[Depends(verify_approved_origin)])
 async def get_livekit_token(
     request: Request,
@@ -1553,8 +1794,8 @@ async def get_livekit_token(
     api_key = LIVEKIT_API_KEY
     api_secret = LIVEKIT_API_SECRET
     
-    resolved_room = room
-    resolved_identity = identity
+    resolved_room = room or request.query_params.get("roomName")
+    resolved_identity = identity or request.query_params.get("participantName") or request.query_params.get("userName")
     
     # Resolve parameters from JSON body if method is POST
     if request.method == "POST":
@@ -1563,15 +1804,15 @@ async def get_livekit_token(
             if body_bytes:
                 req_json = json.loads(body_bytes)
                 if isinstance(req_json, dict):
-                    resolved_room = req_json.get("room") or resolved_room
-                    resolved_identity = req_json.get("identity") or resolved_identity
+                    resolved_room = req_json.get("room") or req_json.get("roomName") or resolved_room
+                    resolved_identity = req_json.get("identity") or req_json.get("participantName") or req_json.get("userName") or resolved_identity
         except Exception:
             pass
 
     if not resolved_room or not resolved_identity:
         raise HTTPException(
             status_code=400,
-            detail="Both 'room' and 'identity' parameters are required (pass as JSON body or query parameters)."
+            detail="Both 'room' (or roomName) and 'identity' (or participantName/userName) parameters are required (pass as JSON body or query parameters)."
         )
     
     if not api_key or not api_secret:

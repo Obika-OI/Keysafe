@@ -77,12 +77,31 @@ function isOriginAllowed(originOrUrl?: string): boolean {
   const lowerOrigin = String(originOrUrl || '').toLowerCase();
   if (!originOrUrl || lowerOrigin === 'null' || lowerOrigin === 'file://') return true;
 
+  try {
+    const parsedA = new URL(originOrUrl);
+    const hostA = parsedA.host.toLowerCase().split(':')[0];
+    if (
+      hostA === 'backpack-edu.com' ||
+      hostA.endsWith('.backpack-edu.com') ||
+      hostA === 'backpack-9e1e0.web.app' ||
+      hostA.endsWith('.web.app') ||
+      hostA.endsWith('.firebaseapp.com') ||
+      hostA.endsWith('.run.app') ||
+      hostA === 'localhost' ||
+      hostA === '127.0.0.1' ||
+      ['exp:', 'capacitor:', 'ionic:', 'file:', 'app:'].includes(parsedA.protocol)
+    ) {
+      return true;
+    }
+  } catch {
+    // ignore
+  }
+
   return allowedOriginsList.some((allowed) => {
     if (originOrUrl.startsWith(allowed)) return true;
     if (String(originOrUrl).match(/^http:\/\/(192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+)(:\d+)?/)) return true;
     try {
       const parsedA = new URL(originOrUrl);
-      if (['exp:', 'capacitor:', 'ionic:', 'file:', 'app:'].includes(parsedA.protocol)) return true;
       const parsedB = new URL(allowed);
       const hostA = parsedA.host.toLowerCase().split(':')[0];
       const hostB = parsedB.host.toLowerCase().split(':')[0];
@@ -93,7 +112,7 @@ function isOriginAllowed(originOrUrl?: string): boolean {
   });
 }
 
-// Permanent Dynamic CORS Middleware
+// Permanent Dynamic CORS Middleware with full wildcard headers and cloud previews support
 app.use(
   cors({
     origin: (origin, callback) => {
@@ -107,6 +126,7 @@ app.use(
     maxAge: 86400,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD'],
     allowedHeaders: [
+      '*',
       'Content-Type',
       'Authorization',
       'X-Target-URL',
@@ -116,10 +136,14 @@ app.use(
       'X-Client-Type',
       'X-Attestation-Token',
       'X-Attestation-Platform',
+      'X-Paystack-Mode',
+      'X-Environment-Mode',
+      'X-App-Secret',
+      'User-Agent',
       'Cache-Control',
       'Accept',
     ],
-    exposedHeaders: ['X-RateLimit-Limit', 'X-RateLimit-Remaining', 'X-Proxy-Duration-Ms'],
+    exposedHeaders: ['*'],
   })
 );
 
@@ -273,7 +297,7 @@ const verifyApprovedOrigin = async (req: Request, res: Response, next: NextFunct
 app.use('/api/', verifyApprovedOrigin);
 
 // SERVICE 1: GEMINI AI PROXY
-app.post('/api/ai/generate', async (req: Request, res: Response) => {
+app.post(['/api/ai/generate', '/ai/generate'], async (req: Request, res: Response) => {
   try {
     const apiKey = secretVault.GEMINI_API_KEY || process.env.GEMINI_API_KEY;
     if (!apiKey) {
@@ -313,7 +337,7 @@ app.post('/api/ai/generate', async (req: Request, res: Response) => {
 });
 
 // Streaming for Gemini
-app.post('/api/ai/stream', async (req: Request, res: Response) => {
+app.post(['/api/ai/stream', '/ai/stream'], async (req: Request, res: Response) => {
   try {
     const apiKey = secretVault.GEMINI_API_KEY || process.env.GEMINI_API_KEY;
     if (!apiKey) {
@@ -1077,8 +1101,89 @@ app.get(['/diagnostics', '/api/diagnostics'], (req: Request, res: Response) => {
   });
 });
 
+// SERVICE 3.0: PAYSTACK BANKS LIST
+app.get(['/banks', '/bank', '/api/banks', '/api/bank', '/api/paystack/banks', '/api/paystack/bank'], async (req: Request, res: Response) => {
+  const isLiveReq = checkIsLiveRequest(req.query);
+  const paystackKey = isLiveReq
+    ? (secretVault.PAYSTACK_LIVE_SECRET_KEY || secretVault.PAYSTACK_SECRET_KEY)
+    : (secretVault.PAYSTACK_TEST_SECRET_KEY || secretVault.PAYSTACK_SECRET_KEY);
+
+  if (!paystackKey) {
+    res.json({
+      status: true,
+      message: 'Banks retrieved (Mock)',
+      data: [
+        { id: 1, name: 'Access Bank', code: '044', slug: 'access-bank' },
+        { id: 2, name: 'First Bank of Nigeria', code: '011', slug: 'first-bank-of-nigeria' },
+        { id: 3, name: 'Guaranty Trust Bank (GTBank)', code: '058', slug: 'guaranty-trust-bank' },
+        { id: 4, name: 'Zenith Bank', code: '057', slug: 'zenith-bank' },
+        { id: 5, name: 'United Bank For Africa (UBA)', code: '033', slug: 'united-bank-for-africa' },
+        { id: 6, name: 'Kuda Bank', code: '50211', slug: 'kuda-bank' },
+        { id: 7, name: 'OPay Digital Services', code: '999992', slug: 'opay' },
+        { id: 8, name: 'Moniepoint Microfinance Bank', code: '50515', slug: 'moniepoint-mfb' },
+        { id: 9, name: 'Fidelity Bank', code: '070', slug: 'fidelity-bank' },
+        { id: 10, name: 'Stanbic IBTC Bank', code: '221', slug: 'stanbic-ibtc-bank' },
+      ],
+      is_mock: true,
+    });
+    return;
+  }
+
+  try {
+    const country = (req.query.country as string) || 'nigeria';
+    const perPage = (req.query.perPage as string) || '100';
+    const paystackRes = await fetch(`https://api.paystack.co/bank?country=${encodeURIComponent(country)}&perPage=${encodeURIComponent(perPage)}`, {
+      headers: { Authorization: `Bearer ${paystackKey}` },
+    });
+    const data = await paystackRes.json();
+    res.status(paystackRes.status).json(data);
+  } catch (error: any) {
+    res.status(502).json({ success: false, error: error?.message || 'Failed to fetch bank list' });
+  }
+});
+
+// SERVICE 3.01: PAYSTACK RESOLVE ACCOUNT NUMBER (NUBAN)
+app.get(['/resolve-account', '/api/resolve-account', '/api/paystack/resolve-account', '/bank/resolve', '/api/bank/resolve', '/api/paystack/bank/resolve'], async (req: Request, res: Response) => {
+  const accountNumber = (req.query.account_number as string) || '';
+  const bankCode = (req.query.bank_code as string) || (req.query.settlement_bank as string) || '';
+
+  if (!accountNumber || !bankCode) {
+    res.status(400).json({ success: false, error: "Both 'account_number' (10 digits) and 'bank_code' are required" });
+    return;
+  }
+
+  const isLiveReq = checkIsLiveRequest(req.query);
+  const paystackKey = isLiveReq
+    ? (secretVault.PAYSTACK_LIVE_SECRET_KEY || secretVault.PAYSTACK_SECRET_KEY)
+    : (secretVault.PAYSTACK_TEST_SECRET_KEY || secretVault.PAYSTACK_SECRET_KEY);
+
+  if (!paystackKey) {
+    res.json({
+      status: true,
+      message: 'Account resolved (Mock)',
+      data: {
+        account_number: accountNumber,
+        account_name: 'BACKPACK VERIFIED INSTRUCTOR',
+        bank_id: 9,
+      },
+      is_mock: true,
+    });
+    return;
+  }
+
+  try {
+    const paystackRes = await fetch(`https://api.paystack.co/bank/resolve?account_number=${encodeURIComponent(accountNumber)}&bank_code=${encodeURIComponent(bankCode)}`, {
+      headers: { Authorization: `Bearer ${paystackKey}` },
+    });
+    const data = await paystackRes.json();
+    res.status(paystackRes.status).json(data);
+  } catch (error: any) {
+    res.status(502).json({ success: false, error: error?.message || 'Failed to resolve account' });
+  }
+});
+
 // SERVICE 3.1: PAYSTACK SUBACCOUNT CREATION
-app.post(['/subaccount', '/api/subaccount', '/api/payments/subaccount'], async (req: Request, res: Response) => {
+app.post(['/subaccount', '/api/subaccount', '/api/payments/subaccount', '/api/paystack/subaccount', '/paystack/subaccount'], async (req: Request, res: Response) => {
   try {
     const { business_name, settlement_bank, account_number, percentage_charge } = req.body;
     if (!business_name || !settlement_bank || !account_number || percentage_charge === undefined) {
@@ -1157,12 +1262,57 @@ app.post(['/subaccount', '/api/subaccount', '/api/payments/subaccount'], async (
   }
 });
 
-// SERVICE 3.2: PAYSTACK SPLIT PAYMENT INITIALIZE
-app.post(['/split-payment', '/api/split-payment', '/api/payments/split-payment', '/api/payments/paystack-split-init'], async (req: Request, res: Response) => {
+// SERVICE 3.11: PAYSTACK SUBACCOUNT RETRIEVAL & UPDATE
+app.get(['/subaccount/:code', '/api/subaccount/:code', '/api/paystack/subaccount/:code'], async (req: Request, res: Response) => {
+  const code = req.params.code;
+  const isLiveReq = checkIsLiveRequest(req.query);
+  const paystackKey = isLiveReq
+    ? (secretVault.PAYSTACK_LIVE_SECRET_KEY || secretVault.PAYSTACK_SECRET_KEY)
+    : (secretVault.PAYSTACK_TEST_SECRET_KEY || secretVault.PAYSTACK_SECRET_KEY);
+
+  if (!paystackKey) {
+    res.json({
+      status: true,
+      message: 'Subaccount retrieved (Mock)',
+      data: {
+        subaccount_code: code,
+        business_name: 'Verified Instructor Account',
+        is_mock: true,
+      },
+    });
+    return;
+  }
+
   try {
-    const { email, amount, subaccount_code, callback_url, metadata } = req.body;
-    if (!email || !amount || !subaccount_code) {
-      res.status(400).json({ success: false, error: 'email, amount, and subaccount_code are required' });
+    const paystackRes = await fetch(`https://api.paystack.co/subaccount/${encodeURIComponent(code)}`, {
+      headers: { Authorization: `Bearer ${paystackKey}` },
+    });
+    const data = await paystackRes.json();
+    res.status(paystackRes.status).json(data);
+  } catch (error: any) {
+    res.status(502).json({ success: false, error: error?.message || 'Failed to fetch subaccount' });
+  }
+});
+
+// SERVICE 3.2: PAYSTACK SPLIT PAYMENT INITIALIZE
+app.post([
+  '/split-payment',
+  '/api/split-payment',
+  '/api/payments/split-payment',
+  '/api/payments/paystack-split-init',
+  '/api/paystack/split-payment',
+  '/paystack/split-payment',
+  '/transaction/initialize',
+  '/api/transaction/initialize',
+  '/api/paystack/transaction/initialize',
+  '/paystack/transaction/initialize',
+], async (req: Request, res: Response) => {
+  try {
+    const { email, amount, subaccount_code, subaccount, callback_url, metadata } = req.body;
+    const targetSubaccount = subaccount_code || subaccount;
+
+    if (!email || !amount) {
+      res.status(400).json({ success: false, error: 'email and amount are required' });
       return;
     }
 
@@ -1209,19 +1359,23 @@ app.post(['/split-payment', '/api/split-payment', '/api/payments/split-payment',
       return;
     }
 
+    const payload: any = {
+      email,
+      amount,
+      callback_url,
+      metadata,
+    };
+    if (targetSubaccount) {
+      payload.subaccount = targetSubaccount;
+    }
+
     const paystackRes = await fetch('https://api.paystack.co/transaction/initialize', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${paystackKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        email,
-        amount,
-        callback_url,
-        metadata,
-        subaccount: subaccount_code,
-      }),
+      body: JSON.stringify(payload),
     });
 
     const data = await paystackRes.json();
@@ -1236,8 +1390,48 @@ app.post(['/split-payment', '/api/split-payment', '/api/payments/split-payment',
   }
 });
 
+// SERVICE 3.3: PAYSTACK TRANSACTION VERIFICATION
+app.get([
+  '/transaction/verify/:reference',
+  '/api/transaction/verify/:reference',
+  '/api/paystack/transaction/verify/:reference',
+  '/paystack/verify/:reference',
+  '/api/paystack/verify/:reference',
+], async (req: Request, res: Response) => {
+  const reference = req.params.reference;
+  const isLiveReq = checkIsLiveRequest(req.query);
+  const paystackKey = isLiveReq
+    ? (secretVault.PAYSTACK_LIVE_SECRET_KEY || secretVault.PAYSTACK_SECRET_KEY)
+    : (secretVault.PAYSTACK_TEST_SECRET_KEY || secretVault.PAYSTACK_SECRET_KEY);
+
+  if (!paystackKey) {
+    res.json({
+      status: true,
+      message: 'Verification successful (Mock)',
+      data: {
+        reference,
+        status: 'success',
+        amount: 10000,
+        currency: 'NGN',
+        is_mock: true,
+      },
+    });
+    return;
+  }
+
+  try {
+    const paystackRes = await fetch(`https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`, {
+      headers: { Authorization: `Bearer ${paystackKey}` },
+    });
+    const data = await paystackRes.json();
+    res.status(paystackRes.status).json(data);
+  } catch (error: any) {
+    res.status(502).json({ success: false, error: error?.message || 'Verification error' });
+  }
+});
+
 // SERVICE 4: LIVEKIT ACCESS TOKEN GENERATION
-app.all(['/livekit', '/api/livekit', '/api/livekit/token'], async (req: Request, res: Response) => {
+app.all(['/livekit', '/api/livekit', '/livekit/token', '/api/livekit/token'], async (req: Request, res: Response) => {
   if (req.method !== 'GET' && req.method !== 'POST') {
     res.status(405).json({ success: false, error: 'Method Not Allowed' });
     return;
@@ -1247,11 +1441,11 @@ app.all(['/livekit', '/api/livekit', '/api/livekit/token'], async (req: Request,
   const apiSecret = secretVault.LIVEKIT_API_SECRET || process.env.LIVEKIT_API_SECRET;
   const livekitUrl = secretVault.LIVEKIT_URL || process.env.LIVEKIT_URL;
 
-  const room = (req.query.room || req.body?.room) as string;
-  const identity = (req.query.identity || req.body?.identity) as string;
+  const room = (req.query.room || req.query.roomName || req.body?.room || req.body?.roomName) as string;
+  const identity = (req.query.identity || req.query.participantName || req.query.userName || req.body?.identity || req.body?.participantName || req.body?.userName) as string;
 
   if (!room || !identity) {
-    res.status(400).json({ success: false, error: 'Room and identity are required' });
+    res.status(400).json({ success: false, error: "Both 'room' (or roomName) and 'identity' (or participantName/userName) are required" });
     return;
   }
 
